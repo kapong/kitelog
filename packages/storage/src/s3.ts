@@ -1,5 +1,17 @@
 import { AwsClient } from "aws4fetch";
-import { type Body, type CompletedPart, type PutOptions, type Storage, type StoredObject, StorageError, sized } from "./types";
+import {
+  type Body,
+  type CompletedPart,
+  type ListedObject,
+  type PutOptions,
+  type Storage,
+  type StoredObject,
+  StorageError,
+  assertKey,
+  assertPrefix,
+  assertRange,
+  sized,
+} from "./types";
 
 export interface S3Config {
   endpoint: string; // https only, e.g. https://<account>.r2.cloudflarestorage.com
@@ -9,6 +21,8 @@ export interface S3Config {
   accessKeyId: string;
   secretAccessKey: string;
   pathStyle: boolean;
+  /** Dev / private self-hosting only (Worker var ALLOW_PRIVATE_S3_ENDPOINTS): allow http:// and private hosts. */
+  allowPrivate?: boolean;
 }
 
 type Fetch = (req: Request) => Promise<Response>;
@@ -32,8 +46,27 @@ const tag = (xml: string, name: string): string | null => {
   const m = new RegExp(`<${name}>([\\s\\S]*?)</${name}>`).exec(xml);
   return m ? decodeXml(m[1]!) : null;
 };
-const tags = (xml: string, name: string): string[] =>
-  [...xml.matchAll(new RegExp(`<${name}>([\\s\\S]*?)</${name}>`, "g"))].map((m) => decodeXml(m[1]!));
+/** Inner XML of each <name> element, not entity-decoded (for nested parsing with `tag`). */
+const rawTags = (xml: string, name: string): string[] =>
+  [...xml.matchAll(new RegExp(`<${name}>([\\s\\S]*?)</${name}>`, "g"))].map((m) => m[1]!);
+
+const BUCKET_RE = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
+const MAX_PRESIGN_SEC = 604800; // SigV4 query-signing limit (7 days)
+
+// Integrity check on user-supplied endpoints, NOT the security boundary: Workers' network
+// isolation (no route to private/internal networks) is what actually prevents SSRF. This only
+// rejects obviously-wrong targets early with a clear error.
+function assertEndpoint(ep: URL, allowPrivate: boolean): void {
+  const bad = (why: string): never => {
+    throw new StorageError(`S3 endpoint ${why}`, 400, "invalid_endpoint");
+  };
+  if (ep.username || ep.password) bad("must not contain credentials");
+  if (ep.protocol !== "https:" && !(allowPrivate && ep.protocol === "http:")) bad("must be https://");
+  if (allowPrivate) return;
+  const host = ep.hostname.toLowerCase().replace(/\.$/, "");
+  if (host.startsWith("[") || /^\d+(\.\d+){3}$/.test(host)) bad("must be a hostname, not an IP address");
+  if (host === "localhost" || /\.(localhost|local|internal)$/.test(host)) bad("must be a public hostname");
+}
 
 export class S3Storage implements Storage {
   readonly canPresign = true;
@@ -44,12 +77,20 @@ export class S3Storage implements Storage {
 
   constructor(cfg: S3Config, fetchImpl?: Fetch) {
     const ep = new URL(cfg.endpoint);
-    if (ep.protocol !== "https:") throw new StorageError("S3 endpoint must be https://", 400, "invalid_endpoint");
+    assertEndpoint(ep, cfg.allowPrivate === true);
+    if (!BUCKET_RE.test(cfg.bucket)) throw new StorageError("invalid S3 bucket name", 400, "invalid_bucket");
     const path = ep.pathname.replace(/\/+$/, "");
     this.base = cfg.pathStyle
       ? `${ep.origin}${path}/${encodeKey(cfg.bucket)}`
-      : `https://${cfg.bucket}.${ep.host}${path}`;
+      : `${ep.protocol}//${cfg.bucket}.${ep.host}${path}`;
     const p = cfg.prefix.replace(/^\/+|\/+$/g, "");
+    if (p) {
+      try {
+        assertKey(p);
+      } catch {
+        throw new StorageError("invalid S3 prefix", 400, "invalid_prefix");
+      }
+    }
     this.prefix = p ? p + "/" : "";
     this.aws = new AwsClient({
       accessKeyId: cfg.accessKeyId,
@@ -61,14 +102,26 @@ export class S3Storage implements Storage {
   }
 
   private url(key: string, query: Record<string, string> = {}): string {
-    const k = key ? "/" + encodeKey(this.prefix + key.replace(/^\/+/, "")) : "/";
+    assertKey(key); // every object method goes through here
+    return this.withQuery(this.base + "/" + encodeKey(this.prefix + key), query);
+  }
+
+  private withQuery(url: string, query: Record<string, string>): string {
     const qs = new URLSearchParams(query).toString();
-    return this.base + k + (qs ? "?" + qs : "");
+    return url + (qs ? "?" + qs : "");
   }
 
   private async send(method: string, url: string, init: { headers?: Record<string, string>; body?: Body } = {}, allow404 = false): Promise<Response | null> {
     const req = await this.aws.sign(url, { method, headers: init.headers, body: init.body as BodyInit | undefined });
-    const res = await this.fetch(req);
+    let res: Response;
+    try {
+      res = await this.fetch(req);
+    } catch (e) {
+      // Network failure (DNS, TLS, refused). workerd's message is often an opaque
+      // "internal error; reference = …": name the host instead. No headers/URL query (signatures).
+      const why = e instanceof Error && !/internal error/i.test(e.message) ? e.message : "host unreachable, DNS or TLS failure";
+      throw new StorageError(`could not connect to endpoint ${new URL(url).host}: ${why}`, 502, "network_error");
+    }
     if (res.ok) return res;
     if (allow404 && res.status === 404) {
       await res.body?.cancel();
@@ -90,6 +143,9 @@ export class S3Storage implements Storage {
   }
 
   private presign(method: string, url: string, expiresSec: number): Promise<string> {
+    if (!(Number.isFinite(expiresSec) && expiresSec >= 1 && expiresSec <= MAX_PRESIGN_SEC)) {
+      throw new StorageError(`expiresSec must be 1..${MAX_PRESIGN_SEC}`, 400, "invalid_expires");
+    }
     const u = new URL(url);
     u.searchParams.set("X-Amz-Expires", String(Math.floor(expiresSec)));
     return this.aws.sign(u.toString(), { method, aws: { signQuery: true } }).then((r) => r.url);
@@ -112,6 +168,29 @@ export class S3Storage implements Storage {
     };
   }
 
+  async head(key: string): Promise<{ size: number } | null> {
+    const res = await this.send("HEAD", this.url(key), {}, true);
+    if (!res) return null;
+    await res.body?.cancel();
+    return { size: Number(res.headers.get("Content-Length") ?? 0) };
+  }
+
+  async getRange(key: string, offset: number, length: number): Promise<ArrayBuffer> {
+    const url = this.url(key);
+    assertRange(offset, length);
+    if (length === 0) return new ArrayBuffer(0);
+    const res = (await this.send("GET", url, { headers: { Range: `bytes=${offset}-${offset + length - 1}` } }))!;
+    if (res.status === 206) {
+      const buf = await res.arrayBuffer();
+      return buf.byteLength > length ? buf.slice(0, length) : buf;
+    }
+    // Store ignored Range and sent the whole object: fine only if that's what we asked for.
+    const size = Number(res.headers.get("Content-Length") ?? NaN);
+    if (offset === 0 && Number.isFinite(size) && length >= size) return res.arrayBuffer();
+    await res.body?.cancel();
+    throw new StorageError(`S3 GET ignored Range (status ${res.status})`, 502, "range_unsupported");
+  }
+
   async delete(key: string): Promise<void> {
     const res = await this.send("DELETE", this.url(key), {}, true);
     await res?.body?.cancel();
@@ -121,6 +200,7 @@ export class S3Storage implements Storage {
   // x-amz-checksum-*, which R2/RustFS/MinIO support unevenly. Individual DELETEs with small
   // concurrency are universally compatible; switch to batch if compaction delete volume hurts.
   async deleteMany(keys: string[]): Promise<void> {
+    keys.forEach(assertKey);
     const queue = [...keys];
     const worker = async () => {
       for (let k = queue.shift(); k !== undefined; k = queue.shift()) await this.delete(k);
@@ -128,17 +208,20 @@ export class S3Storage implements Storage {
     await Promise.all(Array.from({ length: Math.min(8, queue.length) }, worker));
   }
 
-  async list(prefix: string): Promise<string[]> {
-    const keys: string[] = [];
+  async list(prefix: string): Promise<ListedObject[]> {
+    assertPrefix(prefix);
+    const out: ListedObject[] = [];
     let token: string | null = null;
     do {
-      const q: Record<string, string> = { "list-type": "2", prefix: this.prefix + prefix.replace(/^\/+/, "") };
+      const q: Record<string, string> = { "list-type": "2", prefix: this.prefix + prefix };
       if (token) q["continuation-token"] = token;
-      const xml = await this.xml((await this.send("GET", this.url("", q)))!);
-      for (const k of tags(xml, "Key")) keys.push(k.slice(this.prefix.length));
+      const xml = await this.xml((await this.send("GET", this.withQuery(this.base + "/", q)))!);
+      for (const c of rawTags(xml, "Contents")) {
+        out.push({ key: (tag(c, "Key") ?? "").slice(this.prefix.length), size: Number(tag(c, "Size") ?? 0) });
+      }
       token = tag(xml, "IsTruncated") === "true" ? tag(xml, "NextContinuationToken") : null;
     } while (token);
-    return keys;
+    return out;
   }
 
   presignPut(key: string, expiresSec: number): Promise<string> {

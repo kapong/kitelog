@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "kitelog-web",
+  "compatibility_date": "2026-08-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "vinext/server/fetch-handler",
+  "assets": {
+    "directory": "dist/client",
+    "not_found_handling": "none",
+    "binding": "ASSETS"
+  },
+  // /api/* is forwarded to the API Worker (app/api/[...path]/route.ts). Same origin, no CORS.
+  // In dev, the Vite plugin reaches a separately running `wrangler dev` of apps/api through
+  // the local dev registry.
+  "services": [{ "binding": "API", "service": "kitelog-api" }]
+}

@@ -3,3 +3,10 @@ packages:
   - packages/*
 minimumReleaseAgeExclude:
   - '@cloudflare/workers-types'
+  - miniflare@5.20261006.0-alpha
+  - wrangler@4.148.0
+  - '@cloudflare/vite-plugin@1.63.0'
+  - '@vitejs/plugin-rsc@0.5.36'
+allowBuilds:
+  esbuild: true
+  workerd: true

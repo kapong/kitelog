@@ -14,7 +14,8 @@ log = logging.getLogger("kitelog")
 RETRIES = 5  # extra attempts after the first one
 BACKOFF = 1.0  # seconds before the first retry; doubles each time
 MAX_BACKOFF = 30.0
-TIMEOUT = 60.0
+TIMEOUT = 30.0  # per attempt, JSON API calls
+UPLOAD_TIMEOUT = 300.0  # per attempt, file body PUTs
 
 
 class ApiError(Exception):
@@ -56,25 +57,63 @@ def _error(status, raw):
         return ApiError(status, f"http_{status}", raw[:200].decode("utf-8", "replace"))
 
 
-def send(make_request):
+def retryable(e):
+    """Worth sending again later: network failure, 5xx, 429, or an unparsable 2xx body."""
+    return e.status == 0 or e.status >= 500 or e.status == 429 or e.code == "bad_json"
+
+
+def run_ended(e):
+    """409 `run_not_running`: the run is finished or failed; nothing more will be accepted."""
+    return e.status == 409 and e.code == "run_not_running"
+
+
+def stop_sending(e):
+    """Terminal for the whole run: key rejected or run already ended."""
+    return auth_failed(e) or run_ended(e)
+
+
+def auth_failed(e):
+    """The API key was rejected. (403 `storage_tier_limit` only refuses one file.)"""
+    return e.status == 401 or (e.status == 403 and e.code != "storage_tier_limit")
+
+
+def send(make_request, timeout=None, deadline=lambda: None, retry=retryable):
     """Send make_request() (a fresh urllib Request per attempt) with retries.
 
-    Retries network errors, 5xx and 429 with exponential backoff. Other HTTP
-    errors raise immediately. Returns (headers, body_bytes); raises ApiError.
+    Retries errors for which `retry(err)` is true (default: network errors, 5xx,
+    429) with exponential backoff. Other HTTP errors raise immediately. `deadline()` returns an absolute time.monotonic()
+    (or None); no attempt or backoff runs past it. Returns (status, headers,
+    body_bytes); raises ApiError.
     """
+    timeout = TIMEOUT if timeout is None else timeout
     delay = BACKOFF
     for attempt in range(RETRIES + 1):
+        t = timeout
+        end = deadline()
+        if end is not None:
+            t = min(t, end - time.monotonic())
+            if t <= 0:
+                raise ApiError(0, "timeout", "deadline reached")
         try:
-            with urllib.request.urlopen(make_request(), timeout=TIMEOUT) as r:
-                return r.headers, r.read()
+            with urllib.request.urlopen(make_request(), timeout=t) as r:
+                return r.status, r.headers, r.read()
         except urllib.error.HTTPError as e:
-            err = _error(e.code, e.read())
-            if not (e.code >= 500 or e.code == 429) or attempt == RETRIES:
+            try:
+                raw = e.read()
+            except (OSError, http.client.HTTPException):
+                raw = b""
+            err = _error(e.code, raw)
+            if not retry(err) or attempt == RETRIES:
                 raise err from None
         except (OSError, http.client.HTTPException) as e:
+            err = ApiError(0, "network_error", str(e))
             if attempt == RETRIES:
-                raise ApiError(0, "network_error", str(e)) from None
-        time.sleep(min(delay, MAX_BACKOFF))
+                raise err from None
+        pause = min(delay, MAX_BACKOFF)
+        end = deadline()
+        if end is not None and time.monotonic() + pause >= end:
+            raise err
+        time.sleep(pause)
         delay *= 2
 
 
@@ -82,6 +121,7 @@ class Client:
     def __init__(self, base_url, api_key):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self.deadline = None  # absolute time.monotonic(); set by finish() to bound shutdown
 
     def url(self, url):
         """Resolve a possibly relative URL from upload instructions against the base URL."""
@@ -96,5 +136,10 @@ class Client:
         def make():
             return urllib.request.Request(self.base_url + path, data=data, headers=headers, method=method)
 
-        _, raw = send(make)
-        return json.loads(raw) if raw.strip() else {}
+        status, _, raw = send(make, deadline=lambda: self.deadline)
+        if not raw.strip():
+            return {}
+        try:
+            return json.loads(raw)
+        except ValueError:
+            raise ApiError(status, "bad_json", "response is not JSON: " + raw[:100].decode("utf-8", "replace")) from None

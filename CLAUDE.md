@@ -19,7 +19,7 @@ apps/
       routes/          one file per resource: auth, invites, projects, members, keys, storage,
                        runs, metrics, uploads, files
       middleware/      session auth, api-key auth, role / scope checks
-      cron.ts          mark stale runs `crashed`
+      cron.ts          mark stale runs `crashed`, compact stopped runs, abort expired uploads
     wrangler.jsonc
   web/                 Cloudflare Worker: vinext (Next.js App Router on Vite) + Tailwind. UI only.
     app/               routes: (auth)/login, (auth)/invite/[token], projects/[slug],
@@ -70,7 +70,10 @@ Two tiers. The client never learns which tier, backend, or S3 details a project 
 - Limits live in Worker vars (`FALLBACK_MAX_CHECKPOINT_MB=100`), not code.
 - S3 secret keys encrypted at rest in D1 (AES-GCM, key from Worker secret `STORAGE_ENC_KEY`).
   Never returned to the UI; show only endpoint, bucket, and access-key prefix.
-- S3 endpoint must be `https://`. `POST .../storage/test` does a put/get/delete probe before saving.
+- S3 endpoint must be `https://` with a public hostname (Workers cannot reach private networks;
+  expose home/LAN RustFS/MinIO via e.g. Cloudflare Tunnel). Worker var `ALLOW_PRIVATE_S3_ENDPOINTS=1`
+  (local dev only, never in prod) allows `http://` and private hosts. `POST .../storage/test`
+  does a put/get/delete probe before saving.
 - Changing or removing S3 config does not migrate existing data.
 
 ### Uploads (files)
@@ -81,6 +84,7 @@ Two tiers. The client never learns which tier, backend, or S3 details a project 
 - Client just follows instructions; it does not know which case it is.
 - Worker upload URL auth: the upload `id` (random UUID) is the capability. Single-use
   (`status = pending`), expires 1 h after creation. No API key is sent to `/uploads/:id/body`.
+  Own-S3 presigned / multipart uploads expire after 24 h (large files). Cron aborts expired ones.
 
 ### Metrics (object storage, not D1)
 - Metrics live in the project's storage as **Parquet**, written in the Worker with
@@ -96,20 +100,34 @@ Two tiers. The client never learns which tier, backend, or S3 details a project 
 - `POST /runs` (create or `resume`) takes `writer_id` and returns that writer's `last_seq`
   (-1 if new). The client continues from `last_seq + 1`, so a resumed writer never overwrites.
 - Metric keys: 1–256 chars, no `,`, whitespace, or control chars (`,` separates keys in reads).
-- **Compaction**: writer 0 calls `POST .../metrics/compact` every 50 of its segments and on
-  `finish()`. Compaction runs in writer 0's sender thread, so it never overlaps its own writes.
-  It merges `data.parquet` + all writers' segments up to a snapshot of their committed seqs,
-  sorts by `(key, step, writer_id)`, writes new `data.parquet`, then deletes merged segments.
-  Same `(key, step)` from two writers: keep the latest `ts`.
+- **Compaction** (immutable chunks; memory bounded forever): writer 0 calls
+  `POST .../metrics/compact` every 20 of its segments and on `finish()`. Compaction runs in
+  writer 0's sender thread, so it never overlaps its own writes. It merges ONLY pending
+  segments (all writers, up to a snapshot of committed seqs, capped at `MAX_COMPACT_ROWS`
+  = 200k rows per chunk; at most 3 chunks per call, response `more: true` → call again) into a
+  new immutable `chunk-{n:06}-{8 hex}.parquet` (random suffix: concurrent compactions never
+  overwrite each other; overlaps dedupe at read), sorted
+  `(key, step, writer_id)` and deduped within, then deletes those segments. Old chunks are
+  never rewritten.
+- Same `(key, step)` twice (two writers, or across chunks): keep the latest `ts`, resolved at
+  read time.
 - Object layout: `{prefix}/p/{project_id}/r/{run_id}/metrics/`
-  `seg-{writer_id}-{seq:06}.parquet` and `data.parquet`. Columns: `key` string, `step` int64,
-  `value` float64, `ts` int64 (ms), `writer_id` int32. Sorted by key, so row-group stats let
-  reads skip other keys.
-- Reads: `data.parquet` + uncompacted segments, filter keys, downsample to about 2000 points
-  per series (server-side). Dashboard polls every 15 s for running runs.
+  `seg-{writer_id}-{seq:06}.parquet` and `chunk-{n:06}-{8 hex}.parquet` (legacy: no suffix). Columns: `key` string,
+  `step` int64, `value` float64, `ts` int64 (ms), `writer_id` int32. Sorted by key, row groups
+  of 10k rows with stats, so reads skip other keys.
+- Reads: range GETs (Parquet footer + only row groups whose key stats match), fold each file
+  straight into per-key column arrays, downsample per file then once more after concatenation
+  (about 2000 points per series). Memory is O(row group + files × points), not O(series).
+  Dashboard polls every 15 s for running runs.
+- Known ceiling: about 400 files per read (≈ 80M rows per run). Tiered re-compaction of chunks is future work.
+  Over 200 pending segments → 413 `too_many_files` (compact first); over 400 files → 413 `run_too_large`.
+- Measured: about 17 bytes per row in Parquet; Worker heap ceiling about 300k rows per request.
+  **Workers Paid plan recommended**: Free plan's 10 ms CPU and 50 subrequests per request are
+  too small for compaction and reads of long runs.
 - **Crash detection**: Cron Trigger every 5 min marks runs `crashed` when writer 0's heartbeat
   is stale. Heartbeat rides on metric flushes (no extra requests); an idle client sends a bare
-  heartbeat every 60 s. Crashed runs are compacted lazily on first read.
+  heartbeat every 60 s. Runs no longer `running` with uncompacted
+  segments (crashed, or finish() compaction cut short) are compacted by the same cron (4 runs per tick).
 - D1 keeps only metadata: metric keys per run with last step and last value (for run tables
   and summary).
 
@@ -149,7 +167,7 @@ Client (API key):
 - `PATCH /api/v1/runs/:id` — update config / summary / status / heartbeat
 - `POST /api/v1/runs/:id/metrics` — `{writer_id, seq, points: [{key, step, value, ts}]}`
   → one Parquet segment; also updates heartbeat and `run_metric_keys`
-- `POST /api/v1/runs/:id/metrics/compact` — writer 0 only
+- `POST /api/v1/runs/:id/metrics/compact` — called by writer 0 (not enforced)
 - `POST /api/v1/runs/:id/heartbeat` — `{writer_id}` (idle clients only)
 - `POST /api/v1/runs/:id/uploads` — `{path, kind, size, content_type}` → upload instructions
 - `PUT  /api/v1/uploads/:id/body` — Worker upload target (fallback tier only)
@@ -177,9 +195,14 @@ kl.finish()
 - `init()` fetches capabilities. The client knows only what it can save, never where.
   Disallowed values or files are skipped with ONE warning each. Server enforces the same rules.
 - `log()` is non-blocking: queue + one background sender thread flushes every ~15 s or
-  5000 points, and asks for compaction (writer 0) every 50 segments.
-- Distributed: every rank calls `init(run_id=...)` with the same run id; `writer_id` defaults to
-  `RANK`. Only writer 0's `finish()` compacts and closes the run; other writers just flush.
+  5000 points, and asks for compaction (writer 0) every 20 segments. Buffer capped at 1M
+  points (oldest batch dropped with a warning).
+- `finish()` has a 30 s total deadline; unsent points are reported, never block exit longer.
+- 401/403 disables the run after one warning (except 403 `storage_tier_limit`: skip that file).
+- Distributed: every rank calls `init(run_id=...)` (default env `KITELOG_RUN_ID`) with the same
+  user-chosen id (`^[A-Za-z0-9_-]{1,64}$`); `POST /runs {resume}` creates it if missing (201) or joins (200),
+  race-safe, 404 if another project owns it. `writer_id` defaults to `RANK`.
+  Only writer 0's `finish()` compacts and closes the run; other writers just flush.
 - `atexit` flushes and sets status; uncaught exception sets `failed`.
 - Network errors retry with backoff; never crash the training script.
 - Stdlib only (`urllib`, `threading`, `json`). Packaging via `pyproject.toml` (hatchling).
@@ -193,7 +216,7 @@ pnpm --filter api db:migrate:local      # apply D1 migrations locally
 pnpm dev                                # api + web together
 pnpm test                               # all TS packages
 pnpm --filter api deploy && pnpm --filter web deploy
-cd clients/python && pip install -e . && pytest
+cd clients/python && pip install -e '.[dev]' && pytest
 ```
 
 ## Conventions

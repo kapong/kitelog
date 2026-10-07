@@ -12,6 +12,11 @@ export interface StoredObject {
   contentType: string | null;
 }
 
+export interface ListedObject {
+  key: string;
+  size: number;
+}
+
 export interface CompletedPart {
   n: number;
   etag: string;
@@ -24,8 +29,12 @@ export interface Storage {
   get(key: string): Promise<StoredObject | null>;
   delete(key: string): Promise<void>;
   deleteMany(keys: string[]): Promise<void>;
-  /** All keys under `prefix` (relative to the storage's own prefix), across pages. */
-  list(prefix: string): Promise<string[]>;
+  /** Size of an object, or null if missing. */
+  head(key: string): Promise<{ size: number } | null>;
+  /** Bytes [offset, offset+length) of an object (shorter if it runs past the end). 404 if missing. */
+  getRange(key: string, offset: number, length: number): Promise<ArrayBuffer>;
+  /** All objects under `prefix` (relative to the storage's own prefix), across pages. */
+  list(prefix: string): Promise<ListedObject[]>;
   presignPut(key: string, expiresSec: number): Promise<string>;
   presignGet(key: string, expiresSec: number): Promise<string>;
   createMultipart(key: string, contentType?: string): Promise<string>;
@@ -52,4 +61,47 @@ export function sized(body: Body, size: number | undefined): Body {
   const fixed = new FixedLengthStream(size);
   void body.pipeTo(fixed.writable).catch(() => {});
   return fixed.readable;
+}
+
+// Segments `.`/`..` (literal or percent-encoded) would be resolved away by WHATWG URL parsing,
+// letting a key escape the storage prefix (and, path-style, the bucket) with a valid signature.
+const DOT_SEGMENT = /^(?:\.|%2e){1,2}$/i;
+const BAD_CHARS = /[\x00-\x1f\x7f\\]/;
+
+/** Reject keys that are empty, absolute, contain dot segments, control chars, or backslashes. */
+export function assertKey(key: string): void {
+  if (
+    typeof key !== "string" ||
+    key === "" ||
+    key.startsWith("/") ||
+    BAD_CHARS.test(key) ||
+    key.split("/").some((seg) => DOT_SEGMENT.test(seg))
+  ) {
+    throw new StorageError(`invalid object key: ${JSON.stringify(key)}`, 400, "invalid_key");
+  }
+}
+
+/** Like assertKey, but "" (everything) and a trailing "/" are allowed. */
+export function assertPrefix(prefix: string): void {
+  if (prefix === "") return;
+  assertKey(prefix.endsWith("/") ? prefix.slice(0, -1) : prefix);
+}
+
+export function assertRange(offset: number, length: number): void {
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0) {
+    throw new StorageError(`invalid range: offset=${offset} length=${length}`, 400, "invalid_range");
+  }
+}
+
+/** hyparquet's AsyncBuffer over a stored object; each slice is one ranged read. */
+export interface AsyncBuffer {
+  byteLength: number;
+  slice(start: number, end?: number): Promise<ArrayBuffer>;
+}
+
+export function asyncBuffer(storage: Storage, key: string, size: number): AsyncBuffer {
+  return {
+    byteLength: size,
+    slice: (start, end = size) => storage.getRange(key, start, Math.max(0, end - start)),
+  };
 }

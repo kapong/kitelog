@@ -1,0 +1,11 @@
+# Copy to .dev.vars for `wrangler dev`. In production: `wrangler secret put STORAGE_ENC_KEY`.
+# AES-256-GCM key for S3 secrets at rest: base64 of 32 random bytes. Generate with:
+#   openssl rand -base64 32
+#   (or) node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+STORAGE_ENC_KEY=
+
+# Local dev / private self-hosting ONLY: allow http:// and private-host (localhost, LAN IP,
+# *.local) S3 endpoints, e.g. a RustFS/MinIO container at http://localhost:9000. Never set in
+# production: deployed Workers cannot reach private networks anyway (use a public https hostname,
+# e.g. Cloudflare Tunnel).
+# ALLOW_PRIVATE_S3_ENDPOINTS=1

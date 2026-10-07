@@ -16,6 +16,7 @@ CREATE TABLE sessions (
   token_hash TEXT NOT NULL UNIQUE,
   expires_at INTEGER NOT NULL
 );
+CREATE INDEX sessions_user ON sessions(user_id);
 
 CREATE TABLE invites (
   id         TEXT PRIMARY KEY,
@@ -87,7 +88,7 @@ CREATE TABLE runs (
   finished_at  INTEGER,
   heartbeat_at INTEGER
 );
-CREATE INDEX runs_project_created ON runs(project_id, created_at);
+CREATE INDEX runs_project_created ON runs(project_id, created_at, id);
 CREATE INDEX runs_status_heartbeat ON runs(status, heartbeat_at);
 
 CREATE TABLE run_writers (

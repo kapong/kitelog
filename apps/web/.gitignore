@@ -1,0 +1,4 @@
+.vinext/
+.cloudflare/
+next-env.d.ts
+.next/

@@ -4,7 +4,8 @@
   "type": "module",
   "packageManager": "pnpm@12.9.1",
   "scripts": {
-    "test": "vitest run",
+    "dev": "pnpm -r --parallel --no-bail --filter api --filter web dev",
+    "test": "vitest run && pnpm --filter api test",
     "typecheck": "pnpm -r --if-present typecheck"
   },
   "devDependencies": {

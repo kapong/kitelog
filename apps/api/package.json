@@ -1,0 +1,27 @@
+{
+  "name": "api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc -p .",
+    "test": "vitest run",
+    "db:migrate:local": "wrangler d1 migrations apply kitelog --local"
+  },
+  "dependencies": {
+    "@kitelog/auth": "workspace:*",
+    "@kitelog/db": "workspace:*",
+    "@kitelog/metrics": "workspace:*",
+    "@kitelog/shared": "workspace:*",
+    "@kitelog/storage": "workspace:*",
+    "hono": "^4.13.13",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^5.20261007.1",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.148.0"
+  }
+}

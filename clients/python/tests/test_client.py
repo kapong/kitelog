@@ -20,7 +20,7 @@ def test_init_log_flush_seq_order(server):
     run = kitelog.init(project="proj", name="exp", config={"lr": 0.1}, tags=["a"])
     assert run.id == "r1" and run.writer_id == 0
     create = server.find("POST", "/api/v1/runs")[0]
-    assert create["json"] == {"name": "exp", "config": {"lr": 0.1}, "tags": ["a"]}
+    assert create["json"] == {"name": "exp", "config": {"lr": 0.1}, "tags": ["a"], "writer_id": 0}
     assert create["headers"]["authorization"] == "Bearer kl_test"
 
     kitelog.log({"loss": 1.0, "acc": 0.5})
@@ -32,7 +32,7 @@ def test_init_log_flush_seq_order(server):
     run._flush()  # nothing queued: no empty segment
 
     posts = server.find("POST", METRICS)
-    assert seqs(server) == [1, 2]
+    assert seqs(server) == [0, 1]  # new writer: last_seq -1, so seq starts at 0
     assert all(p["json"]["writer_id"] == 0 for p in posts)
     pts = posts[0]["json"]["points"]
     assert [(p["key"], p["step"], p["value"]) for p in pts] == [("loss", 0, 1.0), ("acc", 0, 0.5), ("loss", 1, 0.9)]
@@ -55,7 +55,7 @@ def test_flush_on_max_points_and_interval(server, monkeypatch):
     deadline = time.time() + 5
     while len(server.find("POST", METRICS)) < 3 and time.time() < deadline:
         time.sleep(0.01)
-    assert seqs(server) == [1, 2, 3]
+    assert seqs(server) == [0, 1, 2]
     assert len(server.find("POST", METRICS)[2]["json"]["points"]) == 6
 
 
@@ -70,11 +70,11 @@ def test_retry_resends_same_seq(server):
     run = kitelog.init()
     kitelog.log({"loss": 1.0})
     run._flush()
-    assert seqs(server) == [1, 1]
+    assert seqs(server) == [0, 0]
     assert calls[0]["json"] == calls[1]["json"]
     kitelog.log({"loss": 2.0})
     run._flush()
-    assert seqs(server) == [1, 1, 2]
+    assert seqs(server) == [0, 0, 1]
 
 
 def test_failed_flush_keeps_batch_for_next_flush(server, caplog):
@@ -88,7 +88,7 @@ def test_failed_flush_keeps_batch_for_next_flush(server, caplog):
     kitelog.log({"loss": 2.0})
     run._flush()
     ok = server.find("POST", METRICS)[-2:]
-    assert [r["json"]["seq"] for r in ok] == [1, 2]
+    assert [r["json"]["seq"] for r in ok] == [0, 1]
     assert [p["value"] for p in ok[0]["json"]["points"]] == [1.0]
 
 
@@ -97,31 +97,29 @@ def test_4xx_not_retried(server, caplog):
     run = kitelog.init()
     kitelog.log({"loss": 1.0})
     run._flush()
-    assert seqs(server) == [1]
+    assert seqs(server) == [0]
     assert "dropping 1 points" in caplog.text
-
-
-def test_409_advances_seq(server):
-    def conflict(req):
-        if req["json"]["seq"] <= 5:
-            return 409, {"error": {"code": "seq_conflict", "message": "seq too low"}}
-        return 200, {}
-
-    server.on("POST", METRICS, conflict)
-    run = kitelog.init(run_id="r1")
-    assert server.find("POST", "/api/v1/runs")[0]["json"] == {"resume": "r1"}
-    kitelog.log({"loss": 1.0})
-    run._flush()
-    kitelog.log({"loss": 2.0})
-    run._flush()
-    posts = server.find("POST", METRICS)
-    assert seqs(server) == [1, 2, 4, 8, 9]  # jumps 1, 2, 4 past the conflict, then continues
-    assert posts[0]["json"]["points"] == posts[3]["json"]["points"]
 
 
 def test_resume_kwarg_sends_resume(server):
     kitelog.init(resume="r1", name="again")
-    assert server.find("POST", "/api/v1/runs")[0]["json"] == {"name": "again", "resume": "r1"}
+    assert server.find("POST", "/api/v1/runs")[0]["json"] == {"name": "again", "resume": "r1", "writer_id": 0}
+
+
+def test_run_id_sent_as_resume(server):
+    kitelog.init(run_id="exp-42")
+    assert server.find("POST", "/api/v1/runs")[0]["json"] == {"resume": "exp-42", "writer_id": 0}
+
+
+def test_run_id_from_env(server, monkeypatch):
+    monkeypatch.setenv("KITELOG_RUN_ID", "exp-env")
+    monkeypatch.setenv("RANK", "3")
+    kitelog.init(project="proj")
+    assert server.find("POST", "/api/v1/runs")[0]["json"] == {"resume": "exp-env", "writer_id": 3}
+    kitelog.finish()
+    monkeypatch.setenv("KITELOG_RUN_ID", "ignored")
+    kitelog.init(run_id="explicit")
+    assert server.find("POST", "/api/v1/runs")[1]["json"]["resume"] == "explicit"
 
 
 def test_numeric_only_drops_with_single_warning(server, caplog):
@@ -145,6 +143,16 @@ def test_bad_keys_and_steps_dropped(server, caplog):
     pts = server.find("POST", METRICS)[0]["json"]["points"]
     assert [(p["key"], p["value"]) for p in pts] == [("ok", 3.0)]
     assert "negative step" in caplog.text
+
+
+def test_del_char_key_dropped_with_warning(server, caplog):
+    run = kitelog.init()
+    with caplog.at_level(logging.WARNING, logger="kitelog"):
+        kitelog.log({"bad\x7fkey": 1.0, "ok": 2.0})
+    run._flush()
+    pts = server.find("POST", METRICS)[0]["json"]["points"]
+    assert [p["key"] for p in pts] == ["ok"]
+    assert "dropping metric key" in caplog.text
 
 
 def test_no_checkpoint_limit_when_null(server, tmp_path):
@@ -233,7 +241,7 @@ def test_upload_rejected_is_warning(server, tmp_path, caplog):
 def test_finish_compacts_and_sets_status(server):
     kitelog.init()
     kitelog.log({"loss": 1.0})
-    kitelog.finish(quiet=True)
+    kitelog.finish()
     assert kitelog.run is None
     tail = server.paths()[-3:]
     assert tail == [("POST", METRICS), ("POST", METRICS + "/compact"), ("PATCH", "/api/v1/runs/r1")]
@@ -244,8 +252,8 @@ def test_finish_compacts_and_sets_status(server):
 
 def test_finish_failed_status(server):
     run = kitelog.init()
-    run.finish(exit_code=1, quiet=True)
-    run.finish(quiet=True)  # idempotent
+    run.finish(exit_code=1)
+    run.finish()  # idempotent
     assert [r["json"] for r in server.find("PATCH", "/api/v1/runs/r1")] == [{"status": "failed"}]
 
 
@@ -256,7 +264,7 @@ def test_compaction_every_n_segments(server, monkeypatch):
         kitelog.log({"x": i})
         run._flush()
     assert len(server.find("POST", METRICS + "/compact")) == 2
-    kitelog.finish(quiet=True)
+    kitelog.finish()
     assert len(server.find("POST", METRICS + "/compact")) == 3
 
 
@@ -265,7 +273,7 @@ def test_non_zero_writer_only_flushes(server, monkeypatch):
     monkeypatch.setattr(sender, "COMPACT_EVERY", 1)
     kitelog.init(run_id="r1")
     kitelog.log({"loss": 1.0})
-    kitelog.finish(quiet=True)
+    kitelog.finish()
     assert server.find("POST", METRICS)[0]["json"]["writer_id"] == 1
     assert server.find("POST", METRICS + "/compact") == []
     assert server.find("PATCH", "/api/v1/runs/r1") == []
@@ -297,7 +305,7 @@ def test_server_down_never_crashes(monkeypatch, tmp_path, caplog):
     assert run.id is None and "init failed" in caplog.text
     kitelog.log({"loss": 1.0})
     kitelog.save("nothing")
-    kitelog.finish(quiet=True)
+    kitelog.finish()
 
 
 def test_missing_credentials_raises(monkeypatch, tmp_path):
@@ -320,3 +328,47 @@ def test_cli_login_writes_private_config(server, monkeypatch, tmp_path):
     assert server.find("GET", "/api/v1/project")[0]["headers"]["authorization"] == "Bearer kl_secret"
     run = kitelog.init()  # settings now come from the config file
     assert run.id == "r1"
+
+
+def test_summary_sent_in_final_patch(server):
+    run = kitelog.init()
+    kitelog.summary({"acc": 0.9})
+    run.summary["n"] = 3
+    kitelog.finish()
+    patches = server.find("PATCH", "/api/v1/runs/r1")
+    assert [p["json"] for p in patches] == [{"status": "finished", "summary": {"acc": 0.9, "n": 3}}]
+
+
+def test_summary_non_serializable_skipped(server, caplog):
+    class Item:
+        def item(self):
+            return 7
+
+    kitelog.init()
+    kitelog.summary({"ok": Item(), "bad": object(), "nan": float("nan")})
+    kitelog.finish()
+    assert server.find("PATCH", "/api/v1/runs/r1")[0]["json"]["summary"] == {"ok": 7}
+    assert "non-serializable summary value for 'bad'" in caplog.text
+
+
+def test_empty_summary_not_sent(server):
+    kitelog.init()
+    kitelog.summary({})
+    kitelog.finish()
+    assert server.find("PATCH", "/api/v1/runs/r1")[0]["json"] == {"status": "finished"}
+
+
+def test_oversized_summary_dropped_status_kept(server, caplog):
+    kitelog.init()
+    kitelog.summary({"big": "x" * 300_000})
+    kitelog.finish()
+    assert server.find("PATCH", "/api/v1/runs/r1")[0]["json"] == {"status": "finished"}
+    assert "summary too large, not sent" in caplog.text
+
+
+def test_oversized_config_dropped_run_created(server, caplog):
+    run = kitelog.init(name="exp", config={"big": "x" * 300_000})
+    assert run.id == "r1"
+    body = server.find("POST", "/api/v1/runs")[0]["json"]
+    assert "config" not in body and body["name"] == "exp"
+    assert "config too large, not sent" in caplog.text

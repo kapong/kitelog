@@ -21,7 +21,12 @@ export interface StorageEnv {
   BUCKET: R2Bucket;
   STORAGE_ENC_KEY: string;
   FALLBACK_MAX_CHECKPOINT_MB?: string;
+  ALLOW_PRIVATE_S3_ENDPOINTS?: string;
 }
+
+/** Worker var ALLOW_PRIVATE_S3_ENDPOINTS = "1" | "true": local dev / private self-hosting only. */
+export const allowPrivateS3 = (env: { ALLOW_PRIVATE_S3_ENDPOINTS?: string }): boolean =>
+  /^(1|true)$/i.test(String(env.ALLOW_PRIVATE_S3_ENDPOINTS ?? "").trim());
 
 export interface ResolvedStorage {
   storage: Storage;
@@ -66,6 +71,7 @@ export async function resolveStorage(
       accessKeyId: row.access_key_id,
       secretAccessKey: await decryptSecret(row.secret_enc, env.STORAGE_ENC_KEY),
       pathStyle: row.path_style === 1,
+      allowPrivate: allowPrivateS3(env),
     },
     fetchImpl,
   );

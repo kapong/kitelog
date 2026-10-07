@@ -28,8 +28,10 @@ describe("StorageConfigInput", () => {
   it("accepts https and applies defaults", () => {
     expect(StorageConfigInput.parse(ok)).toMatchObject({ region: "auto", prefix: "", path_style: false });
   });
-  it("rejects http endpoints", () => {
-    expect(StorageConfigInput.safeParse({ ...ok, endpoint: "http://s3.example.com" }).success).toBe(false);
+  it("accepts http (API enforces https unless ALLOW_PRIVATE_S3_ENDPOINTS); rejects other schemes", () => {
+    expect(StorageConfigInput.safeParse({ ...ok, endpoint: "http://localhost:9000" }).success).toBe(true);
+    expect(StorageConfigInput.safeParse({ ...ok, endpoint: "ftp://s3.example.com" }).success).toBe(false);
+    expect(StorageConfigInput.safeParse({ ...ok, endpoint: "http://u:p@s3.example.com" }).success).toBe(false);
   });
   it("rejects endpoints with userinfo, query, or fragment", () => {
     for (const endpoint of [

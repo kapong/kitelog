@@ -65,6 +65,9 @@ export const Invite = z.object({
 });
 // Raw token returned once, on creation only.
 export const InviteCreated = Invite.extend({ token: z.string() });
+// Public lookup for the invite page (GET /auth/invite/:token).
+export const InviteLookup = Invite.pick({ email: true, expires_at: true });
+export type InviteLookup = z.infer<typeof InviteLookup>;
 export type InviteCreate = z.infer<typeof InviteCreate>;
 export type Invite = z.infer<typeof Invite>;
 export type InviteCreated = z.infer<typeof InviteCreated>;
@@ -88,6 +91,7 @@ export const Project = z.object({
   name: z.string(),
   description: z.string().nullable(),
   created_at: Ms,
+  role: Role.optional(), // caller's role; only on GET /projects/:slug
 });
 export type ProjectCreate = z.infer<typeof ProjectCreate>;
 export type ProjectPatch = z.infer<typeof ProjectPatch>;
@@ -120,11 +124,12 @@ export type ApiKeyCreated = z.infer<typeof ApiKeyCreated>;
 
 // ---- storage config (owner only) ----
 export const StorageConfigInput = z.object({
-  // https only; no userinfo, query, or fragment (credentials go in their own fields).
+  // http(s); no userinfo, query, or fragment (credentials go in their own fields). The API
+  // requires https + a public host unless ALLOW_PRIVATE_S3_ENDPOINTS is set (S3Storage).
   // (String check: shared is env-agnostic, no DOM/Workers `URL` type.)
   endpoint: z
-    .url({ protocol: /^https$/ })
-    .regex(/^https:\/\/[^/@?#\\]+(\/[^?#]*)?$/i, "endpoint must not contain credentials, query, or fragment"),
+    .url({ protocol: /^https?$/ })
+    .regex(/^https?:\/\/[^/@?#\\]+(\/[^?#]*)?$/i, "endpoint must not contain credentials, query, or fragment"),
   region: z.string().min(1).max(64).default("auto"),
   bucket: z.string().regex(/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/),
   prefix: z.string().max(512).default(""),
@@ -157,12 +162,16 @@ export type Capabilities = z.infer<typeof Capabilities>;
 export type ProjectInfo = z.infer<typeof ProjectInfo>;
 
 // ---- runs ----
+export const RUN_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const RunId = z.string().regex(RUN_ID_RE, "run id: 1-64 chars of A-Z a-z 0-9 _ -");
 const Tags = z.array(z.string().min(1).max(64)).max(100);
 export const RunCreate = z.object({
   name: z.string().min(1).max(128).optional(),
   config: Json.optional(),
   tags: Tags.optional(),
-  resume: Id.optional(), // existing run id to resume
+  // Run id to join: resumes that run, or creates it with this id if it does not exist yet, so
+  // distributed ranks can all join one run by a user-chosen id. Server ids (UUIDs) match too.
+  resume: RunId.optional(),
   writer_id: Int32.default(0),
 });
 // last_seq: this writer's last committed seq (-1 if none). Client continues from last_seq + 1.
@@ -185,6 +194,11 @@ export const Run = z.object({
   finished_at: Ms.nullable(),
   heartbeat_at: Ms.nullable(),
 });
+// Dashboard run list / detail: the run plus each metric key's last (max-step) point.
+export const RunWithMetrics = Run.extend({
+  metrics: z.record(z.string(), z.object({ step: z.number().int(), value: z.number().nullable() })),
+});
+export type RunWithMetrics = z.infer<typeof RunWithMetrics>;
 export type RunCreate = z.infer<typeof RunCreate>;
 export type RunCreated = z.infer<typeof RunCreated>;
 export type RunPatch = z.infer<typeof RunPatch>;
@@ -197,7 +211,7 @@ export const MetricKey = z
   .string()
   .min(1)
   .max(256)
-  .regex(/^[^,\s\x00-\x1f]+$/);
+  .regex(/^[^,\s\x00-\x1f\x7f]+$/);
 export const MetricPoint = z.object({
   key: MetricKey,
   step: z.number().int().nonnegative(), // zod 4 .int() = safe integer
@@ -221,6 +235,10 @@ export const MetricsQuery = z.object({
     .pipe(z.array(MetricKey).min(1).max(100)),
   points: z.coerce.number().int().min(10).max(10_000).default(2000),
 });
+// Compaction does at most a few batches per call; `more: true` → call again.
+export const CompactResult = z.object({ chunks: z.number().int(), segments: z.number().int(), more: z.boolean() });
+// Public: drives the signup page.
+export const AuthStatus = z.object({ needs_setup: z.boolean(), open_signup: z.boolean() });
 // Columnar series per key, downsampled server-side.
 export const MetricsRead = z.object({
   series: z.record(MetricKey, z.object({ step: z.array(z.number()), value: z.array(z.number()) })),
@@ -230,6 +248,8 @@ export type MetricsFlush = z.infer<typeof MetricsFlush>;
 export type Heartbeat = z.infer<typeof Heartbeat>;
 export type MetricsQuery = z.infer<typeof MetricsQuery>;
 export type MetricsRead = z.infer<typeof MetricsRead>;
+export type CompactResult = z.infer<typeof CompactResult>;
+export type AuthStatus = z.infer<typeof AuthStatus>;
 
 // ---- uploads / files ----
 export const UploadCreate = z.object({

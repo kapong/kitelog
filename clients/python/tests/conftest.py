@@ -68,7 +68,9 @@ class FakeServer:
         if req["path"] == "/api/v1/project":
             return 200, {"project": PROJECT, "capabilities": self.caps}, None
         if req["method"] == "POST" and req["path"] == "/api/v1/runs":
-            return 200, {"id": "r1"}, None
+            return 200, {"id": "r1", "last_seq": -1}, None
+        if req["method"] == "POST" and req["path"].endswith("/metrics/compact"):
+            return 200, {"chunks": 0, "segments": 0, "more": False}, None
         return 200, {}, None
 
     def find(self, method, pattern):
@@ -88,9 +90,10 @@ def server(monkeypatch, tmp_path):
     monkeypatch.setenv("KITELOG_BASE_URL", s.url)
     monkeypatch.setenv("KITELOG_API_KEY", "kl_test")
     monkeypatch.delenv("RANK", raising=False)
+    monkeypatch.delenv("KITELOG_RUN_ID", raising=False)
     monkeypatch.setattr(api, "BACKOFF", 0.01)
     monkeypatch.setattr(api, "RETRIES", 2)
     monkeypatch.setattr(sender, "FLUSH_INTERVAL", 30.0)  # tests flush explicitly
     yield s
-    kitelog.finish(quiet=True)
+    kitelog.finish()
     s.httpd.shutdown()

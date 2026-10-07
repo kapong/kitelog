@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kitelog"
+version = "0.1.0"
+description = "Python client for kitelog, a lightweight self-hostable experiment tracker"
+readme = { text = "Python client for kitelog. See https://github.com/kapong/kitelog", content-type = "text/plain" }
+requires-python = ">=3.9"
+license = "MIT"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+kitelog = "kitelog.cli:main"
+
+[project.urls]
+Repository = "https://github.com/kapong/kitelog"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kitelog"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

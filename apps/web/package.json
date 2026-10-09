@@ -7,7 +7,8 @@
     "build": "vite build",
     "start": "wrangler dev --config dist/server/wrangler.json",
     "deploy": "vite build && vinext-cloudflare deploy --config dist/server/wrangler.json",
-    "typecheck": "tsc -p ."
+    "typecheck": "tsc -p .",
+    "deploy:staging": "CLOUDFLARE_ENV=staging vite build && vinext-cloudflare deploy --skip-build --config dist/server/wrangler.json"
   },
   "dependencies": {
     "@kitelog/shared": "workspace:*",

@@ -19,5 +19,25 @@
   // Login / signup / password endpoints: 10 attempts per minute per (client IP, email).
   // namespace_id is any account-unique positive integer string.
   "ratelimits": [{ "name": "AUTH_LIMITER", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } }],
-  "observability": { "enabled": true }
+  "observability": { "enabled": true },
+  // Staging: `pnpm --filter api deploy:staging` (wrangler --env staging). Bindings, vars,
+  // triggers and ratelimits are not inherited by environments, so they are repeated here.
+  "env": {
+    "staging": {
+      "name": "kitelog-api-staging",
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "kitelog-staging",
+          "database_id": "4c39ef3f-0f6c-4ea6-a1df-3183c752d954",
+          "migrations_dir": "../../packages/db/migrations"
+        }
+      ],
+      "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "kitelog-staging" }],
+      "vars": { "FALLBACK_MAX_CHECKPOINT_MB": "100" },
+      "triggers": { "crons": ["*/5 * * * *"] },
+      "ratelimits": [{ "name": "AUTH_LIMITER", "namespace_id": "1002", "simple": { "limit": 10, "period": 60 } }],
+      "observability": { "enabled": true }
+    }
+  }
 }

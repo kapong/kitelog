@@ -13,5 +13,13 @@
   // In dev, the Vite plugin reaches a separately running `wrangler dev` of apps/api through
   // the local dev registry.
   "services": [{ "binding": "API", "service": "kitelog-api" }],
-  "observability": { "enabled": true }
+  "observability": { "enabled": true },
+  // Staging: `pnpm --filter web deploy:staging` (builds with CLOUDFLARE_ENV=staging).
+  "env": {
+    "staging": {
+      "name": "kitelog-web-staging",
+      "services": [{ "binding": "API", "service": "kitelog-api-staging" }],
+      "observability": { "enabled": true }
+    }
+  }
 }

@@ -96,6 +96,26 @@ Run these from the repo root. Use `wrangler` via `pnpm --filter api exec wrangle
 
 Open the web URL, sign up (first user is admin), create a project and an API key.
 
+### Staging
+
+`apps/api/wrangler.jsonc` and `apps/web/wrangler.jsonc` define an `env.staging` environment
+(Workers `kitelog-api-staging` and `kitelog-web-staging`, D1 `kitelog-staging`, R2 bucket
+`kitelog-staging`, its own rate-limit namespace). Environments do not inherit bindings, vars,
+triggers or rate limits, so they are repeated there. Same steps as above with the staging names:
+
+```bash
+pnpm --filter api exec wrangler d1 create kitelog-staging          # put the id in env.staging
+pnpm --filter api exec wrangler r2 bucket create kitelog-staging
+pnpm --filter api exec wrangler secret put STORAGE_ENC_KEY --env staging
+pnpm --filter api db:migrate:staging
+pnpm --filter api deploy:staging
+pnpm --filter web deploy:staging
+```
+
+The web Worker selects the environment at build time (`CLOUDFLARE_ENV=staging vite build`); the
+generated `dist/server/wrangler.json` is already resolved, so it is deployed without `--env`
+(passing `--env` again would deploy a Worker named `kitelog-web-staging-staging`).
+
 ## Users and passwords
 
 - Only the very first account is created by signing up. After that an admin adds users on the admin page; each new user gets a one-time set-password link (`/reset#<token>`, valid 7 days; the token sits in the URL fragment, so it never reaches server logs) that the admin passes on.

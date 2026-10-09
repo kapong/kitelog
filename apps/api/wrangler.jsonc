@@ -3,6 +3,9 @@
   "name": "kitelog-api",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-15",
+  // No public *.workers.dev URL: the web Worker reaches the API through its service binding
+  // and proxies /api/*, so clients use the web origin. Not inherited by envs, so repeated.
+  "workers_dev": false,
   "d1_databases": [
     {
       "binding": "DB",
@@ -25,6 +28,7 @@
   "env": {
     "staging": {
       "name": "kitelog-api-staging",
+      "workers_dev": false,
       "d1_databases": [
         {
           "binding": "DB",

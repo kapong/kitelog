@@ -14,6 +14,7 @@ pnpm workspaces monorepo. Apps deploy; packages are libraries; clients ship to u
 ```
 apps/
   api/                 Cloudflare Worker (Hono). REST API at /api/v1/*. Owns D1 + R2 bindings.
+                       No public URL (`workers_dev: false`); reached only via web's binding.
     src/
       index.ts         Hono app + `scheduled` handler (cron), mounts routes
       routes/          one file per resource: auth, admin, projects, members, keys, storage,
@@ -214,13 +215,15 @@ kl.save("preds.parquet")         # artifact
 kl.finish()
 ```
 
-- Config from env: `KITELOG_API_KEY`, `KITELOG_BASE_URL`; or `kitelog login` writes `~/.kitelog/config`.
+- Config from env: `KITELOG_API_KEY`, `KITELOG_BASE_URL` (the web Worker's URL); or `kitelog login` writes `~/.kitelog/config`.
 - `init()` fetches capabilities. The client knows only what it can save, never where.
   Disallowed values or files are skipped with ONE warning each. Server enforces the same rules.
 - `log()` is non-blocking: queue + one background sender thread flushes every ~15 s or
   5000 points, and asks for compaction (writer 0) every 20 segments. Buffer capped at 1M
   points (oldest batch dropped with a warning).
 - `finish()` has a 30 s total deadline; unsent points are reported, never block exit longer.
+  Order: final flush → PATCH status/summary → compact loop while time remains (a cut-short
+  compaction is finished by cron, the status is never lost).
 - 401/403 disables the run after one warning (except 403 `storage_tier_limit`: skip that file).
 - Distributed: every rank calls `init(run_id=...)` (default env `KITELOG_RUN_ID`) with the same
   user-chosen id (`^[A-Za-z0-9_-]{1,64}$`); `POST /runs {resume}` creates it if missing (201) or joins (200),

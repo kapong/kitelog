@@ -7,6 +7,10 @@
     kl.finish()
 """
 
+# Single source of the version: pyproject reads it (hatch), api.py sends it as User-Agent.
+# Defined before the submodule imports below, which use it.
+__version__ = "0.1.0"
+
 import atexit
 import os
 import sys
@@ -14,7 +18,6 @@ import sys
 from .run import Run
 
 __all__ = ["init", "log", "save", "save_checkpoint", "summary", "finish", "run", "Run"]
-__version__ = "0.1.0"
 
 run = None  # the active Run, set by init()
 _hooked = False

@@ -9,6 +9,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from . import __version__
+
 log = logging.getLogger("kitelog")
 
 RETRIES = 5  # extra attempts after the first one
@@ -16,6 +18,8 @@ BACKOFF = 1.0  # seconds before the first retry; doubles each time
 MAX_BACKOFF = 30.0
 TIMEOUT = 30.0  # per attempt, JSON API calls
 UPLOAD_TIMEOUT = 300.0  # per attempt, file body PUTs
+# Cloudflare's edge rejects urllib's default "Python-urllib/3.x" User-Agent (403 before the Worker).
+USER_AGENT = f"kitelog-python/{__version__}"
 
 
 class ApiError(Exception):
@@ -129,7 +133,8 @@ class Client:
 
     def request(self, method, path, body=None):
         data = None if body is None else json.dumps(body, default=str).encode()
-        headers = {"Authorization": f"Bearer {self.api_key}", "Accept": "application/json"}
+        headers = {"Authorization": f"Bearer {self.api_key}", "Accept": "application/json",
+                   "User-Agent": USER_AGENT}
         if data is not None:
             headers["Content-Type"] = "application/json"
 

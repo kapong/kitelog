@@ -197,6 +197,10 @@ def test_single_upload(server, tmp_path):
     assert "authorization" not in put["headers"]
     assert put["headers"]["x-amz-test"] == "1"
     assert server.find("POST", r"/api/v1/uploads/u1/complete")[0]["json"] == {}
+    # Cloudflare's edge 403s urllib's default User-Agent: every request carries ours.
+    ua = f"kitelog-python/{kitelog.__version__}"
+    assert put["headers"]["user-agent"] == ua
+    assert all(r["headers"].get("user-agent") == ua for r in server.requests)
 
 
 def test_relative_worker_url_upload(server, tmp_path):
@@ -244,7 +248,7 @@ def test_finish_compacts_and_sets_status(server):
     kitelog.finish()
     assert kitelog.run is None
     tail = server.paths()[-3:]
-    assert tail == [("POST", METRICS), ("POST", METRICS + "/compact"), ("PATCH", "/api/v1/runs/r1")]
+    assert tail == [("POST", METRICS), ("PATCH", "/api/v1/runs/r1"), ("POST", METRICS + "/compact")]
     assert server.find("PATCH", "/api/v1/runs/r1")[0]["json"] == {"status": "finished"}
     with pytest.raises(RuntimeError):
         kitelog.log({"x": 1})

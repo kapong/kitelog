@@ -227,6 +227,7 @@ class Run:
         if not any(k.lower() == "content-type" for k in headers):
             headers["Content-Type"] = content_type
         headers["Content-Length"] = str(size)
+        headers.setdefault("User-Agent", api.USER_AGENT)  # not signed, so safe on presigned URLs
 
         def make():
             return urllib.request.Request(self._client.url(url), data=_Slice(f, offset, size),

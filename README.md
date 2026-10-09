@@ -92,7 +92,7 @@ Run these from the repo root. Use `wrangler` via `pnpm --filter api exec wrangle
    pnpm --filter api deploy
    pnpm --filter web deploy
    ```
-6. Optional: add a custom domain to the `kitelog-web` Worker in the Cloudflare dashboard (Workers & Pages, kitelog-web, Settings, Domains & Routes). Use that URL as the client's base URL. The API Worker does not need a public route.
+6. Optional: add a custom domain to the `kitelog-web` Worker in the Cloudflare dashboard (Workers & Pages, kitelog-web, Settings, Domains & Routes). Use that URL as the client's base URL. The API Worker has no public URL (`workers_dev: false` in `apps/api/wrangler.jsonc`); the web Worker reaches it through the service binding, so clients and browsers always use the web origin.
 
 Open the web URL, sign up (first user is admin), create a project and an API key.
 
@@ -115,6 +115,8 @@ pnpm --filter web deploy:staging
 The web Worker selects the environment at build time (`CLOUDFLARE_ENV=staging vite build`); the
 generated `dist/server/wrangler.json` is already resolved, so it is deployed without `--env`
 (passing `--env` again would deploy a Worker named `kitelog-web-staging-staging`).
+Point clients at the staging web URL (`kitelog-web-staging.<subdomain>.workers.dev`); the staging
+API Worker has no public URL either.
 
 ## Users and passwords
 
@@ -144,7 +146,7 @@ pip install "git+https://github.com/kapong/kitelog.git#subdirectory=clients/pyth
 Credentials come from the environment, or from `kitelog login`, which saves them to `~/.kitelog/config` (mode 0600). Environment variables win.
 
 ```bash
-export KITELOG_BASE_URL=https://kitelog.example.com
+export KITELOG_BASE_URL=https://kitelog.example.com   # the web Worker's URL (it proxies /api/*)
 export KITELOG_API_KEY=kl_...
 # or:
 kitelog login

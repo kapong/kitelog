@@ -338,7 +338,7 @@ def test_finish_loops_compaction_until_more_false(server):
     kitelog.log({"x": 1})
     kitelog.finish()
     tail = server.paths()[-5:]
-    assert tail == [("POST", METRICS + "/compact")] * 4 + [("PATCH", "/api/v1/runs/r1")]
+    assert tail == [("PATCH", "/api/v1/runs/r1")] + [("POST", METRICS + "/compact")] * 4
 
 
 def test_finish_compaction_loop_stops_at_deadline(server, monkeypatch):
@@ -349,6 +349,8 @@ def test_finish_compaction_loop_stops_at_deadline(server, monkeypatch):
     kitelog.finish()
     assert time.monotonic() - t < 2
     assert 2 <= len(server.find("POST", METRICS + "/compact")) < 20
+    # status was set before compaction, so the deadline cut did not lose it
+    assert server.find("PATCH", "/api/v1/runs/r1")[0]["json"] == {"status": "finished"}
 
 
 def test_periodic_compaction_does_not_block_flushing(server, monkeypatch):

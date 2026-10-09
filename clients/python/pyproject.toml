@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kitelog"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Python client for kitelog, a lightweight self-hostable experiment tracker"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -19,6 +19,9 @@ kitelog = "kitelog.cli:main"
 
 [project.urls]
 Repository = "https://github.com/kapong/kitelog"
+
+[tool.hatch.version]
+path = "src/kitelog/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kitelog"]

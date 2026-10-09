@@ -216,12 +216,8 @@ class Sender(threading.Thread):
             log.warning("kitelog: %d points not sent", self.pending)
         if self.writer_id != 0 or self.disabled:
             return
-        # Keep compacting while the server reports more work, until finish()'s deadline.
-        while self._compact() and not self.disabled:
-            if self.client.deadline is not None and time.monotonic() >= self.client.deadline:
-                break
-        if self.disabled:
-            return
+        # Status + summary first: a deadline cut then only skips compaction, which cron does
+        # for runs that are no longer running.
         try:
             self.client.request("PATCH", f"/api/v1/runs/{self.run_id}", patch)
         except ApiError as e:
@@ -229,3 +225,9 @@ class Sender(threading.Thread):
                 self._disable(e)
             else:
                 log.warning("kitelog: could not set run status (%s)", e)
+        if self.disabled:
+            return
+        # Keep compacting while the server reports more work, until finish()'s deadline.
+        while self._compact() and not self.disabled:
+            if self.client.deadline is not None and time.monotonic() >= self.client.deadline:
+                break

@@ -213,4 +213,4 @@ Do not set this flag in production: it disables the endpoint checks, and it does
 
 ## License
 
-TBD.
+MIT. See [LICENSE](LICENSE).

@@ -65,4 +65,4 @@ Use a new id for each new run: reusing an id joins (resumes) that run. To contin
 
 ## License
 
-TBD.
+MIT. See [LICENSE](https://github.com/kapong/kitelog/blob/main/LICENSE).

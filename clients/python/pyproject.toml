@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -9,6 +9,24 @@ description = "Python client for kitelog, a lightweight self-hostable experiment
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Phongphan Phienphanich" }]
+keywords = ["experiment-tracking", "machine-learning", "mlops", "metrics", "logging", "cloudflare"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = []
 
 [project.optional-dependencies]
@@ -18,7 +36,9 @@ dev = ["pytest"]
 kitelog = "kitelog.cli:main"
 
 [project.urls]
+Homepage = "https://github.com/kapong/kitelog"
 Repository = "https://github.com/kapong/kitelog"
+Issues = "https://github.com/kapong/kitelog/issues"
 
 [tool.hatch.version]
 path = "src/kitelog/__init__.py"

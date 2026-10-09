@@ -1,0 +1,46 @@
+name: Publish Python client
+
+# Push a tag like `py-v0.1.0` to publish clients/python to PyPI.
+# Uses PyPI Trusted Publishing (OIDC); no API tokens are stored in GitHub.
+on:
+  push:
+    tags: ["py-v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Check tag matches package version
+        run: |
+          tag="${GITHUB_REF_NAME#py-v}"
+          version=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' clients/python/src/kitelog/__init__.py)
+          if [ "$tag" != "$version" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match __version__ $version" >&2
+            exit 1
+          fi
+      - run: pip install build twine
+      - run: python -m build clients/python --outdir dist
+      - run: twine check --strict dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/kitelog
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

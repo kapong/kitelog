@@ -1,13 +1,14 @@
 import type { ZodType } from "zod";
 import type { Context } from "hono";
-import type { ProjectRow, UserRow } from "./env";
+import type { AppEnv, ProjectRow, UserRow } from "./env";
 
 export class ApiError extends Error {
   constructor(
-    readonly status: 400 | 401 | 403 | 404 | 409 | 410 | 413 | 500,
+    readonly status: 400 | 401 | 403 | 404 | 409 | 410 | 413 | 429 | 500,
     readonly code: string,
     message: string,
     readonly extra?: Record<string, unknown>,
+    readonly headers?: Record<string, string>,
   ) {
     super(message);
   }
@@ -51,3 +52,12 @@ export const projectOut = (p: ProjectRow) => ({
   description: p.description,
   created_at: p.created_at,
 });
+
+/** Per `CF-Connecting-IP` + subject (lowercased email) on the AUTH_LIMITER binding; 429 when over. */
+export async function rateLimit(c: Context<AppEnv>, subject: string): Promise<void> {
+  const limiter = c.env.AUTH_LIMITER;
+  if (!limiter) return;
+  const ip = c.req.header("CF-Connecting-IP") ?? "unknown";
+  const { success } = await limiter.limit({ key: `${ip}:${subject.toLowerCase()}` });
+  if (!success) throw new ApiError(429, "rate_limited", "too many attempts, try again in a minute", undefined, { "Retry-After": "60" });
+}

@@ -3,6 +3,8 @@ import type { ReactNode } from "react";
 export default function AuthLayout({ children }: { children: ReactNode }) {
   return (
     <main className="flex min-h-screen items-center justify-center px-4">
+      {/* Insurance: auth pages never leak their URL to other origins. */}
+      <meta name="referrer" content="no-referrer" />
       <div className="w-full max-w-sm">
         <div className="mb-6 text-center text-2xl font-semibold tracking-tight">
           <span className="text-sky-600">kite</span>log

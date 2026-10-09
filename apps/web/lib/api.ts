@@ -1,27 +1,30 @@
 import { z, type ZodType } from "zod";
 import {
+  AdminUser,
+  AdminUserCreated,
   ApiKey,
   ApiKeyCreated,
   AuthStatus,
   ErrorBody,
   FileInfo,
-  Invite,
-  InviteCreated,
-  InviteLookup,
   Member,
   MetricsRead,
+  PasswordResetCreated,
+  PasswordResetLookup,
   Project,
   RunWithMetrics,
-  Settings,
   StorageConfig,
   User,
+  type AdminUserCreate,
+  type AdminUserPatch,
   type ApiKeyCreate,
   type LoginInput,
   type MemberAdd,
+  type PasswordChange,
+  type PasswordResetInput,
   type ProjectCreate,
   type ProjectPatch,
   type Role,
-  type SettingsPatch,
   type SignupInput,
   type StorageConfigInput,
 } from "@kitelog/shared";
@@ -53,6 +56,7 @@ async function req<T>(method: string, path: string, schema: ZodType<T> | null, b
     if (res.status === 401 && !path.startsWith("/auth/") && typeof location !== "undefined") {
       location.assign("/login?next=" + encodeURIComponent(location.pathname + location.search));
     }
+    if (res.status === 429) throw new ApiError(429, "rate_limited", "Too many attempts, try again in a minute.");
     const e = ErrorBody.safeParse(data);
     if (e.success) {
       const raw = (data as { error: Record<string, unknown> }).error;
@@ -73,14 +77,17 @@ export const api = {
   login: (input: LoginInput) => req("POST", "/auth/login", User, input),
   signup: (input: SignupInput) => req("POST", "/auth/signup", User, input),
   logout: () => req("POST", "/auth/logout", null),
-  inviteLookup: (token: string) => req("GET", `/auth/invite/${enc(token)}`, InviteLookup),
+  /** Other sessions of the user are signed out. */
+  changePassword: (input: PasswordChange) => req("POST", "/auth/password", null, input),
+  resetLookup: (token: string) => req("POST", "/auth/reset/lookup", PasswordResetLookup, { token }),
+  resetPassword: (input: PasswordResetInput) => req("POST", "/auth/reset", null, input),
 
   // admin
-  invites: () => req("GET", "/invites", z.array(Invite)),
-  createInvite: (email: string) => req("POST", "/invites", InviteCreated, { email }),
-  revokeInvite: (id: string) => req("DELETE", `/invites/${enc(id)}`, null),
-  settings: () => req("GET", "/settings", Settings),
-  patchSettings: (patch: SettingsPatch) => req("PATCH", "/settings", Settings, patch),
+  users: () => req("GET", "/admin/users", z.array(AdminUser)),
+  createUser: (input: AdminUserCreate) => req("POST", "/admin/users", AdminUserCreated, input),
+  patchUser: (id: string, patch: AdminUserPatch) => req("PATCH", `/admin/users/${enc(id)}`, AdminUser, patch),
+  deleteUser: (id: string) => req("DELETE", `/admin/users/${enc(id)}`, null),
+  resetUser: (id: string) => req("POST", `/admin/users/${enc(id)}/reset`, PasswordResetCreated),
 
   // projects
   projects: () => req("GET", "/projects", z.array(Project)),

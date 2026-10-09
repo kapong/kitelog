@@ -64,6 +64,13 @@ export function TopBar() {
                 {user.name && <div className="font-medium">{user.name}</div>}
                 <div className="truncate text-zinc-500">{user.email}</div>
               </div>
+              <Link
+                href="/account"
+                className="block px-3 py-2 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                onClick={() => setMenu(false)}
+              >
+                Account
+              </Link>
               <button
                 className="block w-full px-3 py-2 text-left hover:bg-zinc-100 dark:hover:bg-zinc-800"
                 onClick={async () => {

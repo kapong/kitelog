@@ -1,8 +1,8 @@
 import { env, exports } from "cloudflare:workers";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { newApiKey, newInviteToken, newSessionToken } from "@kitelog/auth";
+import { newApiKey, newSessionToken } from "@kitelog/auth";
 import { encryptSecret } from "@kitelog/storage";
-import { AuthStatus, FileInfo, InviteLookup, MetricsRead, Project, RunCreated, RunWithMetrics, UploadCreated } from "@kitelog/shared";
+import { AuthStatus, FileInfo, MetricsRead, Project, RunCreated, RunWithMetrics, UploadCreated } from "@kitelog/shared";
 
 // Self-contained: users / projects / keys inserted directly so this file does not depend on
 // api.test.ts. Sequential flow; later steps depend on earlier ones.
@@ -400,24 +400,6 @@ describe("audit fixes", () => {
     expect(r.status).toBe(400);
     expect(((await r.json()) as { error: { message: string } }).error.message).toMatch(/Content-Type/);
   });
-
-  it("public invite lookup: valid → {email, expires_at}; used/expired/unknown → 404", async () => {
-    const mk = async (expires: number, used: number | null) => {
-      const { token, tokenHash } = await newInviteToken();
-      await env.DB.prepare("INSERT INTO invites (id, email, token_hash, created_by, expires_at, used_at) VALUES (?, 'inv@example.com', ?, ?, ?, ?)")
-        .bind(uid(), tokenHash, owner.id, expires, used)
-        .run();
-      return token;
-    };
-    const ok = await call(null, "GET", `/auth/invite/${await mk(Date.now() + 60_000, null)}`);
-    expect(ok.status).toBe(200);
-    expect(InviteLookup.strict().parse(ok.body).email).toBe("inv@example.com");
-    for (const t of [await mk(Date.now() + 60_000, 1), await mk(1, null), "bogus"]) {
-      const r = await call(null, "GET", `/auth/invite/${t}`);
-      expect(r.status).toBe(404);
-      expect(r.body.error.code).toBe("invalid_invite");
-    }
-  });
 });
 
 describe("audit fixes 2", () => {
@@ -571,7 +553,7 @@ describe("audit fixes 2", () => {
     expect(Project.parse(v.body).role).toBe("viewer");
     expect((await call(owner.cookie, "GET", "/projects/p3c")).body.role).toBe("owner");
     const s = await call(null, "GET", "/auth/status");
-    expect(AuthStatus.strict().parse(s.body)).toEqual({ needs_setup: false, open_signup: false });
+    expect(AuthStatus.strict().parse(s.body)).toEqual({ needs_setup: false });
   });
 
   it("storage probe: unreachable endpoint → readable message, no internals", async () => {

@@ -37,11 +37,11 @@ export const ErrorBody = z.object({
 export type ErrorBody = z.infer<typeof ErrorBody>;
 
 // ---- auth ----
+// Public signup works only while there are no users (creates the first admin).
 export const SignupInput = z.object({
   email: Email,
   password: Password,
   name: z.string().max(128).optional(),
-  invite_token: z.string().max(256).optional(), // required unless first user or open signup
 });
 export const LoginInput = z.object({ email: Email, password: Password });
 export const User = z.object({
@@ -51,32 +51,39 @@ export const User = z.object({
   is_admin: z.boolean(),
   created_at: Ms,
 });
+// POST /auth/password (session): other sessions are revoked.
+export const PasswordChange = z.object({ current_password: z.string().min(1).max(256), new_password: Password });
+// POST /auth/reset/lookup (public): the set-password page shows which account it is for.
+// Token in the body, never in a URL path (request URLs are logged).
+export const PasswordResetLookupInput = z.object({ token: z.string().min(1).max(256) });
+export const PasswordResetLookup = z.object({ email: z.string(), expires_at: Ms });
+// POST /auth/reset (public): single-use; all sessions of the user are revoked.
+export const PasswordResetInput = z.object({ token: z.string().min(1).max(256), new_password: Password });
 export type SignupInput = z.infer<typeof SignupInput>;
 export type LoginInput = z.infer<typeof LoginInput>;
 export type User = z.infer<typeof User>;
+export type PasswordChange = z.infer<typeof PasswordChange>;
+export type PasswordResetLookup = z.infer<typeof PasswordResetLookup>;
+export type PasswordResetLookupInput = z.infer<typeof PasswordResetLookupInput>;
+export type PasswordResetInput = z.infer<typeof PasswordResetInput>;
 
-// ---- invites (admin) ----
-export const InviteCreate = z.object({ email: Email });
-export const Invite = z.object({
-  id: Id,
-  email: z.string(),
-  expires_at: Ms,
-  used_at: Ms.nullable(),
+// ---- users (admin) ----
+// Accounts are created by an admin only; the new user sets a password via the reset link.
+export const AdminUser = User;
+export const AdminUserCreate = z.object({
+  email: Email,
+  name: z.string().max(128).optional(),
+  is_admin: z.boolean().optional(),
 });
-// Raw token returned once, on creation only.
-export const InviteCreated = Invite.extend({ token: z.string() });
-// Public lookup for the invite page (GET /auth/invite/:token).
-export const InviteLookup = Invite.pick({ email: true, expires_at: true });
-export type InviteLookup = z.infer<typeof InviteLookup>;
-export type InviteCreate = z.infer<typeof InviteCreate>;
-export type Invite = z.infer<typeof Invite>;
-export type InviteCreated = z.infer<typeof InviteCreated>;
-
-// ---- settings (admin) ----
-export const Settings = z.object({ open_signup: z.boolean() });
-export const SettingsPatch = Settings.partial();
-export type Settings = z.infer<typeof Settings>;
-export type SettingsPatch = z.infer<typeof SettingsPatch>;
+export const AdminUserPatch = z.object({ is_admin: z.boolean().optional() });
+// Raw token returned once; the web link is `/reset#<token>` (fragment: never sent to a server).
+export const PasswordResetCreated = z.object({ token: z.string(), expires_at: Ms });
+export const AdminUserCreated = z.object({ user: AdminUser, reset: PasswordResetCreated });
+export type AdminUser = z.infer<typeof AdminUser>;
+export type AdminUserCreate = z.infer<typeof AdminUserCreate>;
+export type AdminUserPatch = z.infer<typeof AdminUserPatch>;
+export type PasswordResetCreated = z.infer<typeof PasswordResetCreated>;
+export type AdminUserCreated = z.infer<typeof AdminUserCreated>;
 
 // ---- projects ----
 export const ProjectCreate = z.object({
@@ -238,7 +245,7 @@ export const MetricsQuery = z.object({
 // Compaction does at most a few batches per call; `more: true` → call again.
 export const CompactResult = z.object({ chunks: z.number().int(), segments: z.number().int(), more: z.boolean() });
 // Public: drives the signup page.
-export const AuthStatus = z.object({ needs_setup: z.boolean(), open_signup: z.boolean() });
+export const AuthStatus = z.object({ needs_setup: z.boolean() });
 // Columnar series per key, downsampled server-side.
 export const MetricsRead = z.object({
   series: z.record(MetricKey, z.object({ step: z.array(z.number()), value: z.array(z.number()) })),

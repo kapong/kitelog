@@ -5,7 +5,7 @@ kitelog is a small, self-hosted experiment tracker in the style of Weights & Bia
 ## Features
 
 - Projects, each with its own members, API keys, and storage settings.
-- Multi-user with roles (owner, editor, viewer). The first user to sign up becomes admin; after that, signup is invite-only (an admin can enable open signup).
+- Multi-user with roles (owner, editor, viewer). The first user to sign up becomes admin; after that, only an admin can add users (there is no self-registration).
 - Project-scoped API keys (`kl_...`) with `write` or `read` scope.
 - Metrics charts per run, and compare runs side by side. Run tables show the last value of each metric.
 - Checkpoints and artifacts (files) attached to runs.
@@ -95,6 +95,22 @@ Run these from the repo root. Use `wrangler` via `pnpm --filter api exec wrangle
 6. Optional: add a custom domain to the `kitelog-web` Worker in the Cloudflare dashboard (Workers & Pages, kitelog-web, Settings, Domains & Routes). Use that URL as the client's base URL. The API Worker does not need a public route.
 
 Open the web URL, sign up (first user is admin), create a project and an API key.
+
+## Users and passwords
+
+- Only the very first account is created by signing up. After that an admin adds users on the admin page; each new user gets a one-time set-password link (`/reset#<token>`, valid 7 days; the token sits in the URL fragment, so it never reaches server logs) that the admin passes on.
+- Forgotten password: an admin opens the admin page and creates a reset link for that user (valid 24 hours, single use). An admin can reset any user, including another admin. Using the link signs the user out everywhere.
+- Users can change their own password while logged in; their other sessions are signed out.
+- Login, signup, and password endpoints are rate limited to 10 attempts per minute per IP address and email (Workers Rate Limiting binding `AUTH_LIMITER` in `apps/api/wrangler.jsonc`).
+
+**Break-glass (no admin can log in).** Generate a reset link directly in D1. The script prints the SQL to stdout and the link to stderr:
+
+```bash
+pnpm --filter api exec wrangler d1 execute kitelog --remote \
+  --command "$(node apps/api/scripts/admin-reset-link.mjs admin@example.com https://kitelog.example.com)"
+```
+
+Open the printed link within 24 hours. If wrangler reports no rows written, no user has that email.
 
 ## Using the Python client
 

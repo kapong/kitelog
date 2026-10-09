@@ -1,33 +1,21 @@
 "use client";
 import { useEffect, useState } from "react";
-import Link from "next/link";
-import type { AuthStatus } from "@kitelog/shared";
+import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { AuthForm } from "@/components/AuthForm";
 
-// No users yet → the first signup becomes admin. Otherwise signup needs open signup (admin
-// setting) or an invite link (/invite/<token>).
+// Only while there are no users: the first account becomes admin. Admins create every other account.
 export default function SignupPage() {
-  const [status, setStatus] = useState<AuthStatus | null | undefined>(undefined);
+  const router = useRouter();
+  const [setup, setSetup] = useState<boolean | undefined>(undefined);
   useEffect(() => {
-    // On error show the normal form; the API still answers `invite_required` if closed.
-    api.authStatus().then(setStatus, () => setStatus(null));
-  }, []);
-
-  if (status === undefined) return <p className="text-sm text-zinc-500">Loading…</p>;
-  if (status?.needs_setup) return <AuthForm mode="signup" heading="Create the admin account" />;
-  if (status && !status.open_signup)
-    return (
-      <div className="space-y-3 text-sm">
-        <h1 className="text-lg font-semibold">Signup is invite-only</h1>
-        <p className="text-zinc-600 dark:text-zinc-400">Ask an admin for an invite link to create an account.</p>
-        <p className="text-zinc-500">
-          Have an account?{" "}
-          <Link href="/login" className="text-sky-600 hover:underline">
-            Log in
-          </Link>
-        </p>
-      </div>
+    api.authStatus().then(
+      (s) => (s.needs_setup ? setSetup(true) : router.replace("/login")),
+      // API unreachable: show the form; signup answers `signup_closed` if an admin exists.
+      () => setSetup(true),
     );
-  return <AuthForm mode="signup" />;
+  }, [router]);
+
+  if (!setup) return <p className="text-sm text-zinc-500">Loading…</p>;
+  return <AuthForm mode="signup" heading="Create the admin account" />;
 }

@@ -129,9 +129,9 @@ export function parseBearer(authHeader: string | null | undefined): string | nul
   return m ? m[1]! : null;
 }
 
-// ---------- invites ----------
+// ---------- password resets ----------
 
-export const newInviteToken = tokenPair;
+export const newResetToken = tokenPair;
 
 // ---------- roles / scopes ----------
 

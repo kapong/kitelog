@@ -1,6 +1,6 @@
 import { env, exports } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Capabilities, ErrorBody, InviteCreated, Project, ProjectInfo, StorageConfig, User } from "@kitelog/shared";
+import { AdminUserCreated, Capabilities, ErrorBody, Project, ProjectInfo, StorageConfig, User } from "@kitelog/shared";
 
 // One flow, sequential: later steps depend on earlier ones (storage persists within this file).
 type Client = { cookie?: string };
@@ -29,9 +29,9 @@ describe("accounts and projects", () => {
   afterEach(() => vi.restoreAllMocks());
 
   it("first signup becomes admin; session cookie set (not Secure on http)", async () => {
-    expect((await call(null, "GET", "/auth/status")).body).toEqual({ needs_setup: true, open_signup: false });
+    expect((await call(null, "GET", "/auth/status")).body).toEqual({ needs_setup: true });
     const r = await call(admin, "POST", "/auth/signup", { email: "Admin@Example.com", password: pw });
-    expect((await call(null, "GET", "/auth/status")).body).toEqual({ needs_setup: false, open_signup: false });
+    expect((await call(null, "GET", "/auth/status")).body).toEqual({ needs_setup: false });
     expect(r.status).toBe(201);
     const u = User.parse(r.body);
     expect(u.is_admin).toBe(true);
@@ -40,10 +40,10 @@ describe("accounts and projects", () => {
     expect(r.setCookie).not.toMatch(/Secure/);
   });
 
-  it("second signup without invite is blocked", async () => {
+  it("second signup is closed", async () => {
     const r = await call(bob, "POST", "/auth/signup", { email: "bob@example.com", password: pw });
     expect(r.status).toBe(403);
-    expect(ErrorBody.parse(r.body).error.code).toBe("invite_required");
+    expect(ErrorBody.parse(r.body).error.code).toBe("signup_closed");
   });
 
   it("bad input → 400 invalid_input", async () => {
@@ -52,30 +52,21 @@ describe("accounts and projects", () => {
     expect(r.body.error.code).toBe("invalid_input");
   });
 
-  it("invite flow: admin creates, wrong email rejected, invitee signs up, token single-use", async () => {
-    expect((await call(bob, "POST", "/invites", { email: "x@example.com" })).status).toBe(401);
-    const r = await call(admin, "POST", "/invites", { email: "bob@example.com" });
-    expect(r.status).toBe(201);
-    const inv = InviteCreated.parse(r.body);
-    const wrong = await call({}, "POST", "/auth/signup", { email: "eve@example.com", password: pw, invite_token: inv.token });
-    expect(wrong.status).toBe(403);
-    const ok = await call(bob, "POST", "/auth/signup", { email: "bob@example.com", password: pw, invite_token: inv.token });
-    expect(ok.status).toBe(201);
-    expect(User.parse(ok.body).is_admin).toBe(false);
-    const again = await call({}, "POST", "/auth/signup", { email: "bob2@example.com", password: pw, invite_token: inv.token });
-    expect(again.status).toBe(403);
-    const list = await call(admin, "GET", "/invites");
-    expect(list.body[0].used_at).not.toBeNull();
-    expect(list.text).not.toContain(inv.token);
-    expect((await call(bob, "GET", "/invites")).status).toBe(403);
-  });
-
-  it("open signup setting lets anyone sign up", async () => {
-    expect((await call(bob, "PATCH", "/settings", { open_signup: true })).status).toBe(403);
-    expect((await call(admin, "PATCH", "/settings", { open_signup: true })).body).toEqual({ open_signup: true });
-    expect((await call(carol, "POST", "/auth/signup", { email: "carol@example.com", password: pw })).status).toBe(201);
-    await call(admin, "PATCH", "/settings", { open_signup: false });
-    expect((await call(admin, "GET", "/settings")).body).toEqual({ open_signup: false });
+  it("admin creates accounts; the user sets a password through the link", async () => {
+    expect((await call(bob, "POST", "/admin/users", { email: "x@example.com" })).status).toBe(401);
+    for (const [who, email] of [[bob, "bob@example.com"], [carol, "carol@example.com"]] as const) {
+      const r = await call(admin, "POST", "/admin/users", { email, name: email.split("@")[0] });
+      expect(r.status).toBe(201);
+      const created = AdminUserCreated.strict().parse(r.body);
+      expect(created.user).toMatchObject({ email, is_admin: false });
+      expect(created.reset.expires_at - Date.now()).toBeGreaterThan(6 * 24 * 3600_000);
+      // no usable password until the link is used
+      expect((await call({}, "POST", "/auth/login", { email, password: "!" + "x".repeat(8) })).status).toBe(401);
+      expect((await call(null, "POST", "/auth/reset", { token: created.reset.token, new_password: pw })).status).toBe(204);
+      expect((await call(who, "POST", "/auth/login", { email, password: pw })).status).toBe(200);
+    }
+    expect((await call(admin, "POST", "/admin/users", { email: "BOB@example.com" })).body.error.code).toBe("email_taken");
+    expect((await call(bob, "GET", "/admin/users")).status).toBe(403);
   });
 
   it("login / me / logout", async () => {

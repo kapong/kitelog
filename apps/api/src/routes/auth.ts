@@ -9,9 +9,17 @@ import {
   sha256Hex,
   verifyPassword,
 } from "@kitelog/auth";
-import { LoginInput, SignupInput, type AuthStatus, type InviteLookup } from "@kitelog/shared";
+import {
+  LoginInput,
+  PasswordChange,
+  PasswordResetInput,
+  PasswordResetLookupInput,
+  SignupInput,
+  type AuthStatus,
+  type PasswordResetLookup,
+} from "@kitelog/shared";
 import type { AppEnv, UserRow } from "../env";
-import { ApiError, body, userOut } from "../http";
+import { ApiError, body, rateLimit, userOut } from "../http";
 import { sessionAuth } from "../middleware/session";
 
 const SESSION_TTL_MS = 30 * 24 * 3600 * 1000;
@@ -37,79 +45,29 @@ async function startSession(c: Context<AppEnv>, userId: string) {
 
 export const auth = new Hono<AppEnv>();
 
-// Public: the signup page shows "create admin" (no users yet) or whether signup is open.
+// Public: the login page offers "create admin" only while there are no users.
 auth.get("/status", async (c) => {
-  const [users, open] = await c.env.DB.batch<{ n: number } | { value: string }>([
-    c.env.DB.prepare("SELECT EXISTS (SELECT 1 FROM users) AS n"),
-    c.env.DB.prepare("SELECT value FROM settings WHERE key = 'open_signup'"),
-  ]);
-  return c.json({
-    needs_setup: (users!.results[0] as { n: number }).n === 0,
-    open_signup: (open!.results[0] as { value: string } | undefined)?.value === "true",
-  } satisfies AuthStatus);
+  const row = await c.env.DB.prepare("SELECT EXISTS (SELECT 1 FROM users) AS n").first<{ n: number }>();
+  return c.json({ needs_setup: row!.n === 0 } satisfies AuthStatus);
 });
 
-// Public: the web invite page shows which email an invite is for. 404 unless usable.
-auth.get("/invite/:token", async (c) => {
-  const row = await c.env.DB.prepare(
-    "SELECT email, expires_at FROM invites WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?",
-  )
-    .bind(await sha256Hex(c.req.param("token")), Date.now())
-    .first<InviteLookup>();
-  if (!row) throw new ApiError(404, "invalid_invite", "invite is invalid, used, or expired");
-  return c.json(row);
-});
-
-// First user → admin, no invite. Afterwards: valid invite for this email, or settings.open_signup.
+// First-admin setup only. Every other account is created by an admin (POST /admin/users).
 auth.post("/signup", async (c) => {
   const input = await body(c, SignupInput);
+  await rateLimit(c, input.email);
   const db = c.env.DB;
+  const any = await db.prepare("SELECT EXISTS (SELECT 1 FROM users) AS n").first<{ n: number }>();
+  if (any!.n) throw new ApiError(403, "signup_closed", "accounts are created by an admin");
   const id = crypto.randomUUID();
-  const now = Date.now();
-  const pwHash = await hashPassword(input.password);
-  const insert = (isAdmin: number) =>
-    db
-      .prepare("INSERT INTO users (id, email, password_hash, name, is_admin, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-      .bind(id, input.email, pwHash, input.name ?? null, isAdmin, now);
-
-  if (await db.prepare("SELECT 1 FROM users WHERE email = ?").bind(input.email).first()) {
-    throw new ApiError(409, "email_taken", "email already registered");
-  }
-
   // Single statement, so two racing "first" signups cannot both become admin.
   const first = await db
     .prepare(
       `INSERT INTO users (id, email, password_hash, name, is_admin, created_at)
        SELECT ?, ?, ?, ?, 1, ? WHERE NOT EXISTS (SELECT 1 FROM users)`,
     )
-    .bind(id, input.email, pwHash, input.name ?? null, now)
+    .bind(id, input.email, await hashPassword(input.password), input.name ?? null, Date.now())
     .run();
-
-  if (first.meta.changes === 0) {
-    if (input.invite_token) {
-      const tokenHash = await sha256Hex(input.invite_token);
-      // One transaction: claim the invite (only if unused/unexpired/same email), insert the user only if claimed.
-      const [claim] = await db.batch([
-        db
-          .prepare(
-            `UPDATE invites SET used_at = ? WHERE token_hash = ? AND email = ? AND used_at IS NULL AND expires_at > ?`,
-          )
-          .bind(now, tokenHash, input.email, now),
-        db
-          .prepare(
-            `INSERT INTO users (id, email, password_hash, name, is_admin, created_at)
-             SELECT ?, ?, ?, ?, 0, ? WHERE EXISTS (SELECT 1 FROM invites WHERE token_hash = ? AND email = ? AND used_at = ?)`,
-          )
-          .bind(id, input.email, pwHash, input.name ?? null, now, tokenHash, input.email, now),
-      ]);
-      if (claim!.meta.changes !== 1) throw new ApiError(403, "invalid_invite", "invite is invalid, used, or expired");
-    } else {
-      const open = await db.prepare("SELECT value FROM settings WHERE key = 'open_signup'").first<{ value: string }>();
-      if (open?.value !== "true") throw new ApiError(403, "invite_required", "signup requires an invite");
-      await insert(0).run();
-    }
-  }
-
+  if (first.meta.changes === 0) throw new ApiError(403, "signup_closed", "accounts are created by an admin");
   await startSession(c, id);
   const user = await db.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
   return c.json(userOut(user!), 201);
@@ -117,9 +75,10 @@ auth.post("/signup", async (c) => {
 
 auth.post("/login", async (c) => {
   const input = await body(c, LoginInput);
+  await rateLimit(c, input.email);
   const user = await c.env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(input.email).first<UserRow>();
-  // ponytail: no login rate limit yet; add a Cloudflare rate-limiting rule or binding when needed.
-  const ok = user
+  // Unknown users and users without a password yet ("!") cost the same dummy PBKDF2.
+  const ok = user?.password_hash.startsWith("pbkdf2$")
     ? await verifyPassword(input.password, user.password_hash)
     : (await verifyPassword(input.password, await (dummyHash ??= hashPassword("dummy-password"))), false);
   if (!user || !ok) throw new ApiError(401, "invalid_credentials", "invalid email or password");
@@ -135,3 +94,53 @@ auth.post("/logout", async (c) => {
 });
 
 auth.get("/me", sessionAuth, (c) => c.json(userOut(c.get("user"))));
+
+// Session: verify the current password, set the new one, revoke every OTHER session.
+auth.post("/password", sessionAuth, async (c) => {
+  const input = await body(c, PasswordChange);
+  const user = c.get("user");
+  await rateLimit(c, user.email);
+  if (!(await verifyPassword(input.current_password, user.password_hash))) {
+    throw new ApiError(400, "wrong_password", "current password is incorrect");
+  }
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE users SET password_hash = ? WHERE id = ?").bind(await hashPassword(input.new_password), user.id),
+    c.env.DB.prepare("DELETE FROM sessions WHERE user_id = ? AND token_hash != ?").bind(user.id, c.get("sessionHash")),
+  ]);
+  return c.body(null, 204);
+});
+
+// Public: the set-password page shows which account a reset link is for. 404 unless usable.
+auth.post("/reset/lookup", async (c) => {
+  const input = await body(c, PasswordResetLookupInput);
+  await rateLimit(c, "reset");
+  const row = await c.env.DB.prepare(
+    `SELECT u.email, r.expires_at FROM password_resets r JOIN users u ON u.id = r.user_id
+     WHERE r.token_hash = ? AND r.used_at IS NULL AND r.expires_at > ?`,
+  )
+    .bind(await sha256Hex(input.token), Date.now())
+    .first<PasswordResetLookup>();
+  if (!row) throw new ApiError(404, "invalid_reset", "reset link is invalid, used, or expired");
+  return c.json(row);
+});
+
+// Public: single-use claim, set the password, revoke ALL sessions of that user.
+auth.post("/reset", async (c) => {
+  const input = await body(c, PasswordResetInput);
+  await rateLimit(c, "reset");
+  const db = c.env.DB;
+  const tokenHash = await sha256Hex(input.token);
+  const pwHash = await hashPassword(input.new_password);
+  const now = Date.now();
+  const owner = "(SELECT user_id FROM password_resets WHERE token_hash = ? AND used_at = ?)";
+  // One transaction: the password/session statements only match if the claim succeeded.
+  const [claim] = await db.batch([
+    db
+      .prepare("UPDATE password_resets SET used_at = ? WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?")
+      .bind(now, tokenHash, now),
+    db.prepare(`UPDATE users SET password_hash = ? WHERE id = ${owner}`).bind(pwHash, tokenHash, now),
+    db.prepare(`DELETE FROM sessions WHERE user_id = ${owner}`).bind(tokenHash, now),
+  ]);
+  if (claim!.meta.changes !== 1) throw new ApiError(404, "invalid_reset", "reset link is invalid, used, or expired");
+  return c.body(null, 204);
+});

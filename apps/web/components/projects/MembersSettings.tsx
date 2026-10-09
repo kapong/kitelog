@@ -10,7 +10,7 @@ const ROLES = Role.options;
 const memberError = (e: unknown) => {
   if (e instanceof ApiError) {
     if (e.code === "last_owner") return "A project must keep at least one owner.";
-    if (e.code === "user_not_found") return "No user with that email. Invite them first (admin).";
+    if (e.code === "user_not_found") return "No user with that email — ask an admin to add them.";
     if (e.code === "already_member") return "That user is already a member.";
   }
   return errMsg(e);
@@ -111,7 +111,7 @@ export function MembersSettings({ slug, members, isOwner, reload }: {
             </Select>
             <Button type="submit">Add</Button>
           </div>
-          <p className="text-xs text-zinc-500">The user must already have an account.</p>
+          <p className="text-xs text-zinc-500">The user must already have an account (admins create accounts).</p>
           <ErrorText>{error}</ErrorText>
         </form>
       )}

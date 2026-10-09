@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  clearSessionCookie, hashApiKey, hashPassword, newApiKey, newInviteToken, newSessionToken,
+  clearSessionCookie, hashApiKey, hashPassword, newApiKey, newResetToken, newSessionToken,
   parseBearer, randomToken, readCookie, roleAtLeast, scopeAllows, sessionCookie, sha256Hex,
   verifyPassword,
 } from "../src/index";
@@ -49,8 +49,8 @@ describe("tokens", () => {
   it("sha256Hex", async () => {
     expect(await sha256Hex("abc")).toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
   });
-  it("session/invite token hash matches", async () => {
-    for (const { token, tokenHash } of [await newSessionToken(), await newInviteToken()])
+  it("session/reset token hash matches", async () => {
+    for (const { token, tokenHash } of [await newSessionToken(), await newResetToken()])
       expect(tokenHash).toBe(await sha256Hex(token));
   });
 });

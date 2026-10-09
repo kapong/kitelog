@@ -6,7 +6,7 @@ import { ApiError } from "../http";
 
 /**
  * Resolves `:slug` to a project the session user is a member of, with at least `min` role.
- * Admins are NOT implicit members: admin = instance settings + invites only. Non-member and
+ * Admins are NOT implicit members: admin = user management only. Non-member and
  * unknown slug both → 404 (no existence leak); member with too low a role → 403.
  */
 export const requireMember = (min: Role) =>

@@ -12,5 +12,6 @@
   // /api/* is forwarded to the API Worker (app/api/[...path]/route.ts). Same origin, no CORS.
   // In dev, the Vite plugin reaches a separately running `wrangler dev` of apps/api through
   // the local dev registry.
-  "services": [{ "binding": "API", "service": "kitelog-api" }]
+  "services": [{ "binding": "API", "service": "kitelog-api" }],
+  "observability": { "enabled": true }
 }

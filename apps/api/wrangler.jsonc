@@ -15,5 +15,9 @@
   "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "kitelog" }],
   "vars": { "FALLBACK_MAX_CHECKPOINT_MB": "100" },
   // Secret STORAGE_ENC_KEY: see .dev.vars.example; prod: `wrangler secret put STORAGE_ENC_KEY`.
-  "triggers": { "crons": ["*/5 * * * *"] }
+  "triggers": { "crons": ["*/5 * * * *"] },
+  // Login / signup / password endpoints: 10 attempts per minute per (client IP, email).
+  // namespace_id is any account-unique positive integer string.
+  "ratelimits": [{ "name": "AUTH_LIMITER", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } }],
+  "observability": { "enabled": true }
 }

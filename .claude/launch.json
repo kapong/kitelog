@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "api",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["-y", "pnpm@12.9.1", "--filter", "api", "dev"],
+      "port": 8787
+    },
+    {
+      "name": "web",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["-y", "pnpm@12.9.1", "--filter", "web", "dev"],
+      "port": 5173
+    }
+  ]
+}

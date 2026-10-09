@@ -16,13 +16,14 @@ apps/
   api/                 Cloudflare Worker (Hono). REST API at /api/v1/*. Owns D1 + R2 bindings.
     src/
       index.ts         Hono app + `scheduled` handler (cron), mounts routes
-      routes/          one file per resource: auth, invites, projects, members, keys, storage,
+      routes/          one file per resource: auth, admin, projects, members, keys, storage,
                        runs, metrics, uploads, files
       middleware/      session auth, api-key auth, role / scope checks
       cron.ts          mark stale runs `crashed`, compact stopped runs, abort expired uploads
+    scripts/admin-reset-link.mjs  break-glass: SQL + link for a reset when no admin can log in
     wrangler.jsonc
   web/                 Cloudflare Worker: vinext (Next.js App Router on Vite) + Tailwind. UI only.
-    app/               routes: (auth)/login, (auth)/invite/[token], projects/[slug],
+    app/               routes: (auth)/login, (auth)/reset, projects/[slug],
                        projects/[slug]/runs/[id], projects/[slug]/settings, admin
     components/        ui/ (primitives), charts/ (uPlot wrappers), runs/, projects/
     lib/api.ts         typed fetch wrapper for /api/v1
@@ -49,8 +50,19 @@ Rules for code groups:
 ## Decisions (settled — do not re-litigate)
 
 ### Accounts and auth
-- Multi-user, multi-project. First user to sign up becomes admin; after that signup is
-  invite-only (admin can enable open signup in settings).
+- Multi-user, multi-project. Public signup works only while there are no users (it creates
+  the first admin); afterwards 403 `signup_closed`. No invites, no open signup.
+- Users are created by an admin only (`POST /admin/users`): the account gets an unusable
+  password (`"!"`, never a `pbkdf2$` hash) and the response carries a set-password link
+  (`/reset#<token>`, 7 days; fragment, never a path). Admin can promote/demote/delete users; never yourself, never the
+  last admin (409 `last_admin`), never a project's only owner (409 `last_owner`).
+- Password reset (no email infra): admin creates a single-use link (`password_resets`, 24 h,
+  SHA-256 hash stored; a new one deletes older unused ones). Using it sets the password and
+  deletes ALL sessions of the user. Break-glass: `apps/api/scripts/admin-reset-link.mjs`.
+- Password change (session): verify current, set new, delete all OTHER sessions.
+- Rate limit: Workers Rate Limiting binding `AUTH_LIMITER` (10 / 60 s) on login, signup,
+  password change, reset; key `${CF-Connecting-IP}:${lowercased email}` (reset: `ip:reset`).
+  Over → 429 `rate_limited` + `Retry-After: 60`. Binding absent → no limit.
 - Email + password (PBKDF2 via WebCrypto). Session = random token in an HttpOnly cookie,
   hash stored in D1.
 - Project members have roles `owner | editor | viewer`.
@@ -136,8 +148,8 @@ Two tiers. The client never learns which tier, backend, or S3 details a project 
 ```
 users(id, email UNIQUE, password_hash, name, is_admin, created_at)
 sessions(id, user_id, token_hash, expires_at)
-invites(id, email, token_hash UNIQUE, created_by, expires_at, used_at)
-settings(key PK, value)                                      -- open_signup, ...
+password_resets(id, user_id, token_hash UNIQUE, created_by, expires_at, used_at, created_at)
+                                                              -- created_by NULL: break-glass
 projects(id, slug UNIQUE, name, description, created_at)
 project_storage(project_id PK, endpoint, region, bucket, prefix, access_key_id,
                 secret_enc, path_style, updated_at)          -- row exists = own S3 tier
@@ -173,7 +185,18 @@ Client (API key):
 - `PUT  /api/v1/uploads/:id/body` — Worker upload target (fallback tier only)
 - `POST /api/v1/uploads/:id/complete` — `{parts?: [{n, etag}]}` → registers file
 
-Dashboard (session cookie): signup/login, invites, admin settings, projects CRUD, members,
+Auth (public unless noted):
+- `GET /api/v1/auth/status` → `{needs_setup}`; `POST /auth/signup` (first admin only),
+  `POST /auth/login`, `POST /auth/logout`, `GET /auth/me` (session)
+- `POST /api/v1/auth/password` (session) — `{current_password, new_password}` → 204
+- `POST /api/v1/auth/reset/lookup` — `{token}` → `{email, expires_at}` or 404 `invalid_reset` (rate-limited)
+- `POST /api/v1/auth/reset` — `{token, new_password}` → 204 (single-use)
+
+Admin (session, admin): `GET /api/v1/admin/users`; `POST /admin/users {email, name?, is_admin?}`
+→ `{user, reset: {token, expires_at}}`; `PATCH /admin/users/:id {is_admin?}`;
+`DELETE /admin/users/:id`; `POST /admin/users/:id/reset` → `{token, expires_at}`.
+
+Dashboard (session cookie): projects CRUD, members,
 API keys, storage config (`PUT/DELETE /api/v1/projects/:slug/storage`, `POST .../storage/test`;
 owner only), list runs, read metrics (`GET /api/v1/runs/:id/metrics?keys=a,b&points=2000`),
 download files (presigned GET or Worker stream).

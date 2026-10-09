@@ -7,6 +7,8 @@ export interface Env {
   FALLBACK_MAX_CHECKPOINT_MB: string;
   /** "1" | "true": allow http:// and private-host S3 endpoints. Local dev only; never in prod. */
   ALLOW_PRIVATE_S3_ENDPOINTS?: string;
+  /** Rate Limiting binding for login / signup / password endpoints. Absent → no limit. */
+  AUTH_LIMITER?: RateLimit;
 }
 
 export interface UserRow {

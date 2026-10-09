@@ -10,8 +10,7 @@
     {
       "binding": "DB",
       "database_name": "kitelog",
-      // Replace with the id from `wrangler d1 create kitelog`.
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "fff2311e-f9e2-45ef-91a9-3f06f422e393",
       "migrations_dir": "../../packages/db/migrations"
     }
   ],

@@ -14,6 +14,9 @@ from . import api
 from .api import ApiError, Client, load_settings, retryable, send, stop_sending
 from .sender import MAX_PENDING_POINTS, Sender, warn_once
 
+# Python's built-in table only: the host's /etc/mime.types differs per OS (e.g. `.pt`).
+_MIME = mimetypes.MimeTypes()
+
 log = logging.getLogger("kitelog")
 _DROP = object()
 MAX_JSON_CHARS = 256_000  # server limit for a run's summary / config
@@ -177,7 +180,7 @@ class Run:
         if kind == "checkpoint" and limit is not None and size > limit:
             warn_once(self._warned, ("size", path), "kitelog: %s is %d bytes, over the %d byte limit; skipping", path, size, limit)
             return
-        content_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        content_type = _MIME.guess_type(path)[0] or "application/octet-stream"
         try:
             created = self._client.request(
                 "POST",

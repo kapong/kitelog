@@ -5,8 +5,8 @@ import { useRouter } from "next/navigation";
 import type { Project, RunStatus, RunWithMetrics } from "@kitelog/shared";
 import { api, errMsg, runCursor } from "@/lib/api";
 import { fmtDuration, fmtTime, fmtValue, runDuration } from "@/lib/format";
-import { usePoll } from "@/lib/hooks";
-import { Button, Card, Input, Select, cn } from "@/components/ui";
+import { atLeast, usePoll } from "@/lib/hooks";
+import { Button, Card, ConfirmButton, Input, Select, cn, useToast } from "@/components/ui";
 import { MAX_SERIES } from "@/components/charts/palette";
 import { StatusBadge, Tag } from "./StatusBadge";
 
@@ -23,6 +23,7 @@ function merge(cur: RunWithMetrics[], fresh: RunWithMetrics[]) {
 export function RunsTable({ project }: { project: Project }) {
   const slug = project.slug;
   const router = useRouter();
+  const toast = useToast();
   const [runs, setRuns] = useState<RunWithMetrics[] | null>(null);
   const [more, setMore] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -51,6 +52,7 @@ export function RunsTable({ project }: { project: Project }) {
   );
   useEffect(() => void load(), [load]);
 
+  const deletedRef = useRef(new Set<string>()); // drop from stale poll responses
   const runsRef = useRef(runs);
   runsRef.current = runs;
   const anyRunning = !!runs?.some((r) => r.status === "running");
@@ -62,7 +64,7 @@ export function RunsTable({ project }: { project: Project }) {
       // Running runs beyond the first page: refresh individually (bounded).
       const rest = cur.filter((r) => r.status === "running" && !seen.has(r.id)).slice(0, 10);
       const extra = await Promise.all(rest.map((r) => api.run(slug, r.id).catch(() => r)));
-      setRuns((c) => merge(c ?? [], [...first, ...extra]));
+      setRuns((c) => merge(c ?? [], [...first, ...extra].filter((r) => !deletedRef.current.has(r.id))));
       tick((t) => t + 1);
     } catch {
       /* keep showing the last good data */
@@ -85,6 +87,25 @@ export function RunsTable({ project }: { project: Project }) {
         (!s || r.name.toLowerCase().includes(s) || r.id.includes(s) || r.tags.some((t) => t.toLowerCase().includes(s))),
     );
   }, [runs, status, q]);
+
+  const deleteSelected = async () => {
+    const ids = selected;
+    const done: string[] = [];
+    for (const id of ids) {
+      try {
+        await api.deleteRun(slug, id);
+        done.push(id);
+        deletedRef.current.add(id);
+      } catch {
+        /* counted below */
+      }
+    }
+    setRuns((c) => c?.filter((r) => !done.includes(r.id)) ?? c);
+    setSelected((s) => s.filter((id) => !done.includes(id)));
+    const failed = ids.length - done.length;
+    if (done.length) toast(`Deleted ${done.length} run${done.length === 1 ? "" : "s"}`);
+    if (failed) toast(`Failed to delete ${failed} run${failed === 1 ? "" : "s"}`, "error");
+  };
 
   const toggle = (id: string) =>
     setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : s.length < MAX_SERIES ? [...s, id] : s));
@@ -124,6 +145,15 @@ export function RunsTable({ project }: { project: Project }) {
           <Button variant="ghost" size="sm" onClick={() => setSelected([])}>
             Clear
           </Button>
+        )}
+        {selected.length > 0 && atLeast(project.role ?? null, "editor") && (
+          <ConfirmButton
+            label={`Delete (${selected.length})`}
+            title={`Delete ${selected.length} run${selected.length === 1 ? "" : "s"}?`}
+            message={`This permanently deletes ${selected.length} selected run${selected.length === 1 ? "" : "s"}, their metrics and their files.`}
+            confirmLabel="Delete"
+            onConfirm={deleteSelected}
+          />
         )}
         <Button
           size="sm"
